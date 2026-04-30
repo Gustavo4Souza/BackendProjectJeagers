@@ -1,6 +1,8 @@
 services:
   api:
-    image: python:3.12-slim
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
     container_name: jeagers-api
     working_dir: /app
     volumes:
@@ -9,9 +11,7 @@ services:
       DATABASE_URL: postgresql+psycopg2://jeagers:jeagers@db:5432/jeagers
       REDIS_URL: redis://redis:6379/0
       PYTHONUNBUFFERED: "1"
-    command: >
-      sh -c "pip install --no-cache-dir fastapi uvicorn sqlalchemy psycopg2-binary redis passlib[bcrypt] bcrypt==4.0.1
-      && uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
     ports:
       - "8000:8000"
     depends_on:
