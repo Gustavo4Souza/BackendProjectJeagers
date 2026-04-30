@@ -12,7 +12,7 @@ class Reading(Base):
     __tablename__ = "readings"
 
     id = Column(Integer, primary_key=True, index=True)
-    device_id = Column(String(100), index=True, nullable=False)
+    fermenter_id = Column(String(100), index=True, nullable=False)
     metric = Column(String(100), index=True, nullable=False)
     value = Column(Float, nullable=False)
     unit = Column(String(30), nullable=True)
