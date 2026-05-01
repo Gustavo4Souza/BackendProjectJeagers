@@ -4,9 +4,11 @@ import json
 import os
 from collections import defaultdict
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
-from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 from redis.asyncio import Redis
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 import models, schemas, auth
@@ -125,6 +127,8 @@ app = FastAPI(
         {"name": "Health", "description": "Status da aplicacao."},
         {"name": "Auth", "description": "Cadastro e login de usuarios."},
         {"name": "Readings", "description": "Ingestao de leituras de dispositivos."},
+        {"name": "Batches", "description": "Gerenciamento de lotes de fermentacao."},
+        {"name": "Yeast Profiles", "description": "Cadastro de perfis de levedura."},
     ],
 )
 
@@ -134,6 +138,53 @@ def get_db():
         yield db
     finally:
         db.close()
+
+def get_batch_or_404(batch_id: int, db: Session):
+    batch = db.get(models.Batch, batch_id)
+
+    if not batch:
+        raise HTTPException(status_code=404, detail="Lote nao encontrado")
+
+    return batch
+
+def get_yeast_profile_or_404(yeast_profile_id: int, db: Session):
+    yeast_profile = db.get(models.YeastProfile, yeast_profile_id)
+
+    if not yeast_profile:
+        raise HTTPException(status_code=404, detail="Perfil de levedura nao encontrado")
+
+    return yeast_profile
+
+def ensure_yeast_profile_exists(yeast_profile_id: int | None, db: Session):
+    if yeast_profile_id is not None:
+        get_yeast_profile_or_404(yeast_profile_id, db)
+
+def close_completed_batch(batch: models.Batch):
+    if batch.status == "completed" and batch.ended_at is None:
+        batch.ended_at = datetime.now(timezone.utc)
+
+def calculate_batch_stats(batch: models.Batch):
+    original_gravity = batch.original_gravity
+    final_gravity = batch.final_gravity
+
+    if original_gravity is None or final_gravity is None:
+        return None, None
+
+    abv = round((original_gravity - final_gravity) * 131.25, 2)
+    apparent_attenuation = None
+
+    if original_gravity > 1:
+        apparent_attenuation = round(
+            ((original_gravity - final_gravity) / (original_gravity - 1)) * 100,
+            2,
+        )
+
+    return abv, apparent_attenuation
+
+def batch_detail_payload(batch: models.Batch):
+    payload = schemas.BatchDetailResponse.model_validate(batch).model_dump()
+    payload["abv"], payload["apparent_attenuation"] = calculate_batch_stats(batch)
+    return payload
 
 @app.get("/health", response_model=schemas.HealthResponse, tags=["Health"])
 def health():
@@ -192,6 +243,215 @@ async def create_reading(
     )
 
     return new_reading
+
+@app.post("/api/v1/batches", response_model=schemas.BatchResponse, status_code=201, tags=["Batches"])
+def create_batch(batch: schemas.BatchCreate, db: Session = Depends(get_db)):
+    ensure_yeast_profile_exists(batch.yeast_profile_id, db)
+
+    new_batch = models.Batch(**batch.model_dump())
+    close_completed_batch(new_batch)
+
+    db.add(new_batch)
+    db.commit()
+    db.refresh(new_batch)
+
+    return new_batch
+
+@app.get("/api/v1/batches", response_model=list[schemas.BatchResponse], tags=["Batches"])
+def list_batches(
+    status: schemas.BatchStatus | None = Query(default=None),
+    style: str | None = Query(default=None, min_length=1),
+    date_from: datetime | None = Query(default=None),
+    date_to: datetime | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    query = db.query(models.Batch)
+
+    if status:
+        query = query.filter(models.Batch.status == status)
+
+    if style:
+        query = query.filter(models.Batch.style.ilike(f"%{style}%"))
+
+    batch_date = func.coalesce(models.Batch.started_at, models.Batch.created_at)
+
+    if date_from:
+        query = query.filter(batch_date >= date_from)
+
+    if date_to:
+        query = query.filter(batch_date <= date_to)
+
+    return query.order_by(models.Batch.created_at.desc()).all()
+
+@app.get("/api/v1/batches/{id}", response_model=schemas.BatchDetailResponse, tags=["Batches"])
+def get_batch(id: int, db: Session = Depends(get_db)):
+    batch = get_batch_or_404(id, db)
+    return batch_detail_payload(batch)
+
+@app.patch("/api/v1/batches/{id}", response_model=schemas.BatchDetailResponse, tags=["Batches"])
+def update_batch(id: int, batch_update: schemas.BatchUpdate, db: Session = Depends(get_db)):
+    batch = get_batch_or_404(id, db)
+    updates = batch_update.model_dump(exclude_unset=True)
+
+    if "yeast_profile_id" in updates:
+        ensure_yeast_profile_exists(updates["yeast_profile_id"], db)
+
+    for field, value in updates.items():
+        setattr(batch, field, value)
+
+    close_completed_batch(batch)
+
+    if batch.ended_at and batch.started_at and batch.ended_at < batch.started_at:
+        raise HTTPException(status_code=400, detail="ended_at deve ser depois de started_at")
+
+    if (
+        batch.original_gravity is not None
+        and batch.final_gravity is not None
+        and batch.final_gravity > batch.original_gravity
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="final_gravity deve ser menor ou igual a original_gravity",
+        )
+
+    db.commit()
+    db.refresh(batch)
+
+    return batch_detail_payload(batch)
+
+@app.patch(
+    "/api/v1/batches/{id}/events",
+    response_model=schemas.BatchEventResponse,
+    status_code=201,
+    tags=["Batches"],
+)
+def create_batch_event(
+    id: int,
+    event: schemas.BatchEventCreate,
+    db: Session = Depends(get_db),
+):
+    get_batch_or_404(id, db)
+
+    new_event = models.BatchEvent(batch_id=id, **event.model_dump())
+
+    db.add(new_event)
+    db.commit()
+    db.refresh(new_event)
+
+    return new_event
+
+@app.post(
+    "/api/v1/yeast_profiles",
+    response_model=schemas.YeastProfileResponse,
+    status_code=201,
+    tags=["Yeast Profiles"],
+)
+def create_yeast_profile(
+    yeast_profile: schemas.YeastProfileCreate,
+    db: Session = Depends(get_db),
+):
+    existing_profile = (
+        db.query(models.YeastProfile)
+        .filter(models.YeastProfile.name == yeast_profile.name)
+        .first()
+    )
+
+    if existing_profile:
+        raise HTTPException(status_code=400, detail="Perfil de levedura ja existe")
+
+    new_profile = models.YeastProfile(**yeast_profile.model_dump())
+
+    db.add(new_profile)
+    db.commit()
+    db.refresh(new_profile)
+
+    return new_profile
+
+@app.get(
+    "/api/v1/yeast_profiles",
+    response_model=list[schemas.YeastProfileResponse],
+    tags=["Yeast Profiles"],
+)
+def list_yeast_profiles(db: Session = Depends(get_db)):
+    return db.query(models.YeastProfile).order_by(models.YeastProfile.name.asc()).all()
+
+@app.get(
+    "/api/v1/yeast_profiles/{id}",
+    response_model=schemas.YeastProfileResponse,
+    tags=["Yeast Profiles"],
+)
+def get_yeast_profile(id: int, db: Session = Depends(get_db)):
+    return get_yeast_profile_or_404(id, db)
+
+@app.patch(
+    "/api/v1/yeast_profiles/{id}",
+    response_model=schemas.YeastProfileResponse,
+    tags=["Yeast Profiles"],
+)
+def update_yeast_profile(
+    id: int,
+    yeast_profile_update: schemas.YeastProfileUpdate,
+    db: Session = Depends(get_db),
+):
+    yeast_profile = get_yeast_profile_or_404(id, db)
+    updates = yeast_profile_update.model_dump(exclude_unset=True)
+
+    if "name" in updates:
+        existing_profile = (
+            db.query(models.YeastProfile)
+            .filter(
+                models.YeastProfile.name == updates["name"],
+                models.YeastProfile.id != id,
+            )
+            .first()
+        )
+
+        if existing_profile:
+            raise HTTPException(status_code=400, detail="Perfil de levedura ja existe")
+
+    for field, value in updates.items():
+        setattr(yeast_profile, field, value)
+
+    if (
+        yeast_profile.attenuation_min is not None
+        and yeast_profile.attenuation_max is not None
+        and yeast_profile.attenuation_min > yeast_profile.attenuation_max
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="attenuation_min deve ser menor ou igual a attenuation_max",
+        )
+
+    if (
+        yeast_profile.temperature_min_c is not None
+        and yeast_profile.temperature_max_c is not None
+        and yeast_profile.temperature_min_c > yeast_profile.temperature_max_c
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="temperature_min_c deve ser menor ou igual a temperature_max_c",
+        )
+
+    db.commit()
+    db.refresh(yeast_profile)
+
+    return yeast_profile
+
+@app.delete("/api/v1/yeast_profiles/{id}", status_code=204, tags=["Yeast Profiles"])
+def delete_yeast_profile(id: int, db: Session = Depends(get_db)):
+    yeast_profile = get_yeast_profile_or_404(id, db)
+    linked_batches = db.query(models.Batch).filter(models.Batch.yeast_profile_id == id).count()
+
+    if linked_batches:
+        raise HTTPException(
+            status_code=400,
+            detail="Perfil de levedura esta associado a um ou mais lotes",
+        )
+
+    db.delete(yeast_profile)
+    db.commit()
+
+    return Response(status_code=204)
 
 @app.websocket("/ws/fermenters/{id}")
 async def fermenter_readings_websocket(websocket: WebSocket, id: str):
