@@ -3,13 +3,30 @@ from typing import Literal, Optional
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
+UserRole = Literal["admin", "operador", "viewer"]
+
 class UserCreate(BaseModel):
     username: str
     password: str
+    role: UserRole = "viewer"
 
 class UserLogin(BaseModel):
     username: str
     password: str
+
+class TokenResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
+
+class LogoutRequest(BaseModel):
+    refresh_token: str
+
+class LogoutResponse(BaseModel):
+    msg: str
 
 class HealthResponse(BaseModel):
     status: str
@@ -151,3 +168,14 @@ class BatchDetailResponse(BatchResponse):
     apparent_attenuation: Optional[float] = None
     yeast_profile: Optional[YeastProfileResponse] = None
     events: list[BatchEventResponse] = Field(default_factory=list)
+
+class FermenterSpeedPoint(BaseModel):
+    fermenter_id: str
+    timestamp: datetime
+    gravity: float
+    original_gravity: Optional[float] = None
+    apparent_attenuation: Optional[float] = None
+
+class FermenterSpeedResponse(BaseModel):
+    fermenter_id: str
+    points: list[FermenterSpeedPoint]
