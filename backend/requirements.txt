@@ -1,8 +1,10 @@
 fastapi
 pydantic>=2.0
+pydantic-settings
 uvicorn[standard]
 sqlalchemy
 psycopg2-binary
+alembic
 redis>=5.0
 websockets>=12.0
 python-jose[cryptography]>=3.3.0

@@ -1,8 +1,9 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import BigInteger, Column, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
 from database import Base
+
 
 class User(Base):
     __tablename__ = "users"
@@ -11,6 +12,7 @@ class User(Base):
     username = Column(String, unique=True, index=True)
     password = Column(String)
     role = Column(String(30), default="viewer", nullable=False)
+
 
 class RefreshToken(Base):
     __tablename__ = "refresh_tokens"
@@ -23,15 +25,45 @@ class RefreshToken(Base):
     revoked_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
+
+class Tank(Base):
+    __tablename__ = "tanks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), nullable=False)
+    location = Column(String(100), nullable=True)
+    temp_min = Column(Float, nullable=False)
+    temp_max = Column(Float, nullable=False)
+    status = Column(String(20), default="active", nullable=False)
+
+    readings = relationship("Reading", back_populates="tank")
+    alerts = relationship("Alert", back_populates="tank")
+
+
 class Reading(Base):
     __tablename__ = "readings"
 
+    id = Column(BigInteger, primary_key=True, index=True)
+    tank_id = Column(Integer, ForeignKey("tanks.id"), nullable=False, index=True)
+    temperature = Column(Float, nullable=False)
+    recorded_at = Column(DateTime(timezone=True), nullable=False, index=True)
+
+    tank = relationship("Tank", back_populates="readings")
+
+
+class Alert(Base):
+    __tablename__ = "alerts"
+
     id = Column(Integer, primary_key=True, index=True)
-    fermenter_id = Column(String(100), index=True, nullable=False)
-    metric = Column(String(100), index=True, nullable=False)
-    value = Column(Float, nullable=False)
-    unit = Column(String(30), nullable=True)
-    timestamp = Column(DateTime(timezone=True), index=True, nullable=False)
+    tank_id = Column(Integer, ForeignKey("tanks.id"), nullable=False, index=True)
+    temperature = Column(Float, nullable=False)
+    fired_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+    acknowledged_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    tank = relationship("Tank", back_populates="alerts")
+    acknowledged_by_user = relationship("User")
+
 
 class YeastProfile(Base):
     __tablename__ = "yeast_profiles"
@@ -53,6 +85,7 @@ class YeastProfile(Base):
     )
 
     batches = relationship("Batch", back_populates="yeast_profile")
+
 
 class Batch(Base):
     __tablename__ = "batches"
@@ -84,6 +117,7 @@ class Batch(Base):
         cascade="all, delete-orphan",
         order_by="BatchEvent.occurred_at",
     )
+
 
 class BatchEvent(Base):
     __tablename__ = "batch_events"

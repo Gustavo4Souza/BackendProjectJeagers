@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import Literal, Optional
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 UserRole = Literal["admin", "operador", "viewer"]
 
@@ -32,22 +32,62 @@ class HealthResponse(BaseModel):
     status: str
     version: str
 
-class ReadingCreate(BaseModel):
-    fermenter_id: str = Field(
-        ...,
-        validation_alias=AliasChoices("fermenter_id", "device_id"),
-        min_length=1,
-        max_length=100,
-    )
-    metric: str = Field(..., min_length=1, max_length=100)
-    value: float = Field(..., allow_inf_nan=False)
-    unit: Optional[str] = Field(default=None, max_length=30)
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+TankStatus = Literal["normal", "warning", "alert", "offline"]
 
-    model_config = ConfigDict(populate_by_name=True)
-
-class ReadingResponse(ReadingCreate):
+class TankResponse(BaseModel):
     id: int
+    name: str
+    location: Optional[str]
+    temp_min: float
+    temp_max: float
+    status: str
+    current_temperature: Optional[float] = None
+    last_reading_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+class AlertResponse(BaseModel):
+    id: int
+    tank_id: int
+    temperature: float
+    fired_at: datetime
+    resolved_at: Optional[datetime] = None
+    acknowledged_by: Optional[int] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+class TankStatusResponse(BaseModel):
+    tank_id: int
+    name: str
+    current_temperature: Optional[float]
+    last_reading_at: Optional[datetime]
+    temp_min: float
+    temp_max: float
+    tank_status: TankStatus
+    active_alerts: list[AlertResponse] = Field(default_factory=list)
+
+class TankConfigUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    temp_min: Optional[float] = None
+    temp_max: Optional[float] = None
+
+    @model_validator(mode="after")
+    def validate_temp_range(self):
+        if self.temp_min is not None and self.temp_max is not None:
+            if self.temp_min >= self.temp_max:
+                raise ValueError("temp_min deve ser menor que temp_max")
+        return self
+
+class ReadingCreate(BaseModel):
+    tank_id: int = Field(..., gt=0)
+    temperature: float = Field(..., allow_inf_nan=False)
+    recorded_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+class ReadingResponse(BaseModel):
+    id: int
+    tank_id: int
+    temperature: float
+    recorded_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -169,13 +209,3 @@ class BatchDetailResponse(BatchResponse):
     yeast_profile: Optional[YeastProfileResponse] = None
     events: list[BatchEventResponse] = Field(default_factory=list)
 
-class FermenterSpeedPoint(BaseModel):
-    fermenter_id: str
-    timestamp: datetime
-    gravity: float
-    original_gravity: Optional[float] = None
-    apparent_attenuation: Optional[float] = None
-
-class FermenterSpeedResponse(BaseModel):
-    fermenter_id: str
-    points: list[FermenterSpeedPoint]

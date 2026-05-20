@@ -6,13 +6,15 @@ import json
 import os
 from collections import defaultdict
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from redis.asyncio import Redis
 from sqlalchemy import func, inspect, text
 from sqlalchemy.orm import Session
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 import models, schemas, auth
 from database import SessionLocal, engine
@@ -20,10 +22,11 @@ from database import SessionLocal, engine
 API_VERSION = os.getenv("API_VERSION", "0.1.0")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 PROTECTED_ROLES = ("admin", "operador", "viewer")
+ALERTS_CHANNEL = "alerts:events"
 
 
-def fermenter_readings_channel(fermenter_id: str) -> str:
-    return f"fermenters:{fermenter_id}:readings"
+def tank_readings_channel(tank_id: int) -> str:
+    return f"tanks:{tank_id}:readings"
 
 def utc_now():
     return datetime.now(timezone.utc)
@@ -36,43 +39,43 @@ class FermenterWebSocketHub:
         self.lock = asyncio.Lock()
         self.redis = None
 
-    async def connect(self, fermenter_id: str, websocket: WebSocket):
+    async def connect(self, tank_id: str, websocket: WebSocket):
         await websocket.accept()
         async with self.lock:
-            self.clients[fermenter_id].add(websocket)
-            if fermenter_id not in self.subscribers:
-                self.subscribers[fermenter_id] = asyncio.create_task(self.subscribe(fermenter_id))
+            self.clients[tank_id].add(websocket)
+            if tank_id not in self.subscribers:
+                self.subscribers[tank_id] = asyncio.create_task(self.subscribe(tank_id))
 
-    async def disconnect(self, fermenter_id: str, websocket: WebSocket):
+    async def disconnect(self, tank_id: str, websocket: WebSocket):
         task = None
         async with self.lock:
-            self.clients[fermenter_id].discard(websocket)
-            if not self.clients[fermenter_id]:
-                task = self.subscribers.pop(fermenter_id, None)
-                self.clients.pop(fermenter_id, None)
+            self.clients[tank_id].discard(websocket)
+            if not self.clients[tank_id]:
+                task = self.subscribers.pop(tank_id, None)
+                self.clients.pop(tank_id, None)
 
         if task:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
 
-    async def subscribe(self, fermenter_id: str):
+    async def subscribe(self, tank_id: str):
         pubsub = self.redis.pubsub()
-        channel = fermenter_readings_channel(fermenter_id)
+        channel = tank_readings_channel(int(tank_id))
 
         try:
             await pubsub.subscribe(channel)
             async for message in pubsub.listen():
                 if message["type"] == "message":
-                    await self.broadcast(fermenter_id, message["data"])
+                    await self.broadcast(tank_id, message["data"])
         finally:
             with contextlib.suppress(Exception):
                 await pubsub.unsubscribe(channel)
                 await pubsub.aclose()
 
-    async def broadcast(self, fermenter_id: str, message: str):
+    async def broadcast(self, tank_id: str, message: str):
         async with self.lock:
-            clients = list(self.clients.get(fermenter_id, set()))
+            clients = list(self.clients.get(tank_id, set()))
 
         if not clients:
             return
@@ -89,7 +92,7 @@ class FermenterWebSocketHub:
         if stale_clients:
             async with self.lock:
                 for client in stale_clients:
-                    self.clients[fermenter_id].discard(client)
+                    self.clients[tank_id].discard(client)
 
     async def close(self):
         async with self.lock:
@@ -108,18 +111,80 @@ class FermenterWebSocketHub:
 websocket_hub = FermenterWebSocketHub()
 
 
+class AlertsWebSocketHub:
+    def __init__(self):
+        self.clients: set = set()
+        self.subscriber: asyncio.Task | None = None
+        self.lock = asyncio.Lock()
+        self.redis = None
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        async with self.lock:
+            self.clients.add(websocket)
+            if self.subscriber is None or self.subscriber.done():
+                self.subscriber = asyncio.create_task(self.subscribe())
+
+    async def disconnect(self, websocket: WebSocket):
+        async with self.lock:
+            self.clients.discard(websocket)
+
+    async def subscribe(self):
+        pubsub = self.redis.pubsub()
+        try:
+            await pubsub.subscribe(ALERTS_CHANNEL)
+            async for message in pubsub.listen():
+                if message["type"] == "message":
+                    await self.broadcast(message["data"])
+        finally:
+            with contextlib.suppress(Exception):
+                await pubsub.unsubscribe(ALERTS_CHANNEL)
+                await pubsub.aclose()
+
+    async def broadcast(self, message: str):
+        async with self.lock:
+            clients = list(self.clients)
+        if not clients:
+            return
+        results = await asyncio.gather(
+            *(c.send_text(message) for c in clients),
+            return_exceptions=True,
+        )
+        stale = [c for c, r in zip(clients, results) if isinstance(r, Exception)]
+        if stale:
+            async with self.lock:
+                for c in stale:
+                    self.clients.discard(c)
+
+    async def close(self):
+        async with self.lock:
+            task = self.subscriber
+            self.subscriber = None
+            self.clients.clear()
+        if task:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+
+alerts_hub = AlertsWebSocketHub()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.redis = Redis.from_url(REDIS_URL, decode_responses=True)
     await app.state.redis.ping()
     websocket_hub.redis = app.state.redis
+    alerts_hub.redis = app.state.redis
 
     try:
         yield
     finally:
         await websocket_hub.close()
+        await alerts_hub.close()
         await app.state.redis.aclose()
 
+# Tables auto-created on startup; use `alembic upgrade head` for fresh deployments.
 models.Base.metadata.create_all(bind=engine)
 
 def ensure_schema_updates():
@@ -137,9 +202,9 @@ def ensure_schema_updates():
 ensure_schema_updates()
 
 app = FastAPI(
-    title="Jeagers Backend API",
+    title="EH Brewing API",
     version=API_VERSION,
-    description="API de autenticacao e ingestao de leituras de dispositivos.",
+    description="API de monitoramento de temperatura para panelas de bebidas.",
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json",
@@ -147,12 +212,40 @@ app = FastAPI(
     openapi_tags=[
         {"name": "Health", "description": "Status da aplicacao."},
         {"name": "Auth", "description": "Cadastro e login de usuarios."},
-        {"name": "Readings", "description": "Ingestao de leituras de dispositivos."},
+        {"name": "Tanks", "description": "Panelas de armazenamento e suas leituras."},
+        {"name": "Readings", "description": "Ingestao de leituras de temperatura."},
+        {"name": "Alerts", "description": "Alertas de temperatura fora da faixa configurada."},
         {"name": "Batches", "description": "Gerenciamento de lotes de fermentacao."},
         {"name": "Yeast Profiles", "description": "Cadastro de perfis de levedura."},
-        {"name": "Analytics", "description": "Indicadores de fermentacao."},
     ],
 )
+
+
+# --- Error handlers centralizados ---
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+    )
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors()},
+    )
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Erro interno do servidor"},
+    )
+
+
+# --- Dependências ---
 
 def get_db():
     db = SessionLocal()
@@ -275,34 +368,93 @@ def batch_detail_payload(batch: models.Batch):
     payload["abv"], payload["apparent_attenuation"] = calculate_batch_stats(batch)
     return payload
 
-def calculate_apparent_attenuation(original_gravity: float | None, current_gravity: float | None):
-    if original_gravity is None or current_gravity is None or original_gravity <= 1:
-        return None
-
-    return round(((original_gravity - current_gravity) / (original_gravity - 1)) * 100, 2)
-
-def find_original_gravity_for_reading(reading: models.Reading, db: Session):
-    batch = (
-        db.query(models.Batch)
-        .filter(
-            models.Batch.fermenter_id == reading.fermenter_id,
-            models.Batch.original_gravity.isnot(None),
-        )
-        .filter(
-            (models.Batch.started_at.is_(None)) | (models.Batch.started_at <= reading.timestamp)
-        )
-        .filter((models.Batch.ended_at.is_(None)) | (models.Batch.ended_at >= reading.timestamp))
-        .order_by(models.Batch.started_at.desc(), models.Batch.created_at.desc())
-        .first()
-    )
-
-    return batch.original_gravity if batch else None
-
 def as_aware_utc(value: datetime):
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
 
     return value.astimezone(timezone.utc)
+
+
+PERIOD_DELTA: dict[str, timedelta] = {
+    "6h": timedelta(hours=6),
+    "24h": timedelta(hours=24),
+    "7d": timedelta(days=7),
+    "30d": timedelta(days=30),
+}
+
+OFFLINE_THRESHOLD = timedelta(seconds=30)
+WARNING_MARGIN = 0.5
+
+
+def compute_tank_status(
+    temperature: float | None,
+    temp_min: float,
+    temp_max: float,
+    last_reading_at: datetime | None,
+) -> str:
+    if last_reading_at is None:
+        return "offline"
+
+    age = utc_now() - as_aware_utc(last_reading_at)
+    if age > OFFLINE_THRESHOLD:
+        return "offline"
+
+    if temperature is None:
+        return "offline"
+
+    if temperature > temp_max or temperature < temp_min:
+        return "alert"
+
+    if temperature > temp_max - WARNING_MARGIN or temperature < temp_min + WARNING_MARGIN:
+        return "warning"
+
+    return "normal"
+
+
+def get_tank_or_404(tank_id: int, db: Session) -> models.Tank:
+    tank = db.get(models.Tank, tank_id)
+    if not tank:
+        raise HTTPException(status_code=404, detail="Panela nao encontrada")
+    return tank
+
+
+def get_latest_reading(tank_id: int, db: Session) -> models.Reading | None:
+    return (
+        db.query(models.Reading)
+        .filter(models.Reading.tank_id == tank_id)
+        .order_by(models.Reading.recorded_at.desc())
+        .first()
+    )
+
+
+def get_active_alert(tank_id: int, db: Session) -> models.Alert | None:
+    return (
+        db.query(models.Alert)
+        .filter(
+            models.Alert.tank_id == tank_id,
+            models.Alert.resolved_at.is_(None),
+        )
+        .first()
+    )
+
+
+def fire_or_resolve_alert(tank: models.Tank, temperature: float, db: Session) -> models.Alert | None:
+    active_alert = get_active_alert(tank.id, db)
+    out_of_range = temperature > tank.temp_max or temperature < tank.temp_min
+
+    if out_of_range and active_alert is None:
+        new_alert = models.Alert(tank_id=tank.id, temperature=temperature)
+        db.add(new_alert)
+        db.commit()
+        db.refresh(new_alert)
+        return new_alert
+
+    if not out_of_range and active_alert is not None:
+        active_alert.resolved_at = utc_now()
+        db.commit()
+
+    return None
+
 
 def store_refresh_token(username: str, role: str, token_jti: str, expires_at: datetime, db: Session):
     refresh_token = models.RefreshToken(
@@ -353,11 +505,13 @@ def revoke_refresh_token(stored_token: models.RefreshToken, db: Session):
     stored_token.revoked_at = utc_now()
     db.commit()
 
+
+# --- Rotas ---
+
 @app.get("/health", response_model=schemas.HealthResponse, tags=["Health"])
 def health():
     return {"status": "ok", "version": API_VERSION}
 
-# Registro
 @app.post("/register", tags=["Auth"])
 def register(user: schemas.UserCreate, db: Session = Depends(get_db)):
     existing_user = db.query(models.User).filter(models.User.username == user.username).first()
@@ -406,7 +560,6 @@ def logout(payload: schemas.LogoutRequest, db: Session = Depends(get_db)):
 
     return {"msg": "Logout realizado com sucesso"}
 
-# Login
 @app.post("/login", tags=["Auth"])
 def login(user: schemas.UserLogin, db: Session = Depends(get_db)):
     db_user = db.query(models.User).filter(models.User.username == user.username).first()
@@ -431,6 +584,11 @@ async def create_reading(
     request: Request,
     db: Session = Depends(get_db),
 ):
+    tank = db.get(models.Tank, reading.tank_id)
+
+    if not tank:
+        raise HTTPException(status_code=404, detail="Panela nao encontrada")
+
     new_reading = models.Reading(**reading.model_dump())
 
     db.add(new_reading)
@@ -439,11 +597,197 @@ async def create_reading(
 
     payload = schemas.ReadingResponse.model_validate(new_reading).model_dump(mode="json")
     await request.app.state.redis.publish(
-        fermenter_readings_channel(new_reading.fermenter_id),
+        tank_readings_channel(new_reading.tank_id),
         json.dumps(payload),
     )
 
+    fired_alert = fire_or_resolve_alert(tank, new_reading.temperature, db)
+    if fired_alert:
+        alert_payload = schemas.AlertResponse.model_validate(fired_alert).model_dump(mode="json")
+        await request.app.state.redis.publish(ALERTS_CHANNEL, json.dumps(alert_payload))
+
     return new_reading
+
+@app.get(
+    "/api/v1/tanks",
+    response_model=list[schemas.TankResponse],
+    tags=["Tanks"],
+    dependencies=[Depends(require_roles(*PROTECTED_ROLES))],
+)
+def list_tanks(db: Session = Depends(get_db)):
+    tanks = db.query(models.Tank).order_by(models.Tank.id).all()
+    result = []
+
+    for tank in tanks:
+        latest = get_latest_reading(tank.id, db)
+        result.append(
+            schemas.TankResponse(
+                id=tank.id,
+                name=tank.name,
+                location=tank.location,
+                temp_min=tank.temp_min,
+                temp_max=tank.temp_max,
+                status=tank.status,
+                current_temperature=latest.temperature if latest else None,
+                last_reading_at=latest.recorded_at if latest else None,
+            )
+        )
+
+    return result
+
+
+@app.get(
+    "/api/v1/tanks/{id}/readings",
+    response_model=list[schemas.ReadingResponse],
+    tags=["Tanks"],
+    dependencies=[Depends(require_roles(*PROTECTED_ROLES))],
+)
+def list_tank_readings(
+    id: int,
+    period: str = Query(default="24h", pattern="^(6h|24h|7d|30d)$"),
+    db: Session = Depends(get_db),
+):
+    get_tank_or_404(id, db)
+
+    since = utc_now() - PERIOD_DELTA[period]
+
+    readings = (
+        db.query(models.Reading)
+        .filter(
+            models.Reading.tank_id == id,
+            models.Reading.recorded_at >= since,
+        )
+        .order_by(models.Reading.recorded_at.asc())
+        .all()
+    )
+
+    return readings
+
+
+@app.get(
+    "/api/v1/tanks/{id}/status",
+    response_model=schemas.TankStatusResponse,
+    tags=["Tanks"],
+    dependencies=[Depends(require_roles(*PROTECTED_ROLES))],
+)
+def get_tank_status(id: int, db: Session = Depends(get_db)):
+    tank = get_tank_or_404(id, db)
+    latest = get_latest_reading(id, db)
+
+    temperature = latest.temperature if latest else None
+    last_reading_at = latest.recorded_at if latest else None
+    status = compute_tank_status(temperature, tank.temp_min, tank.temp_max, last_reading_at)
+
+    active_alerts = (
+        db.query(models.Alert)
+        .filter(
+            models.Alert.tank_id == id,
+            models.Alert.resolved_at.is_(None),
+        )
+        .order_by(models.Alert.fired_at.desc())
+        .all()
+    )
+
+    return schemas.TankStatusResponse(
+        tank_id=tank.id,
+        name=tank.name,
+        current_temperature=temperature,
+        last_reading_at=last_reading_at,
+        temp_min=tank.temp_min,
+        temp_max=tank.temp_max,
+        tank_status=status,
+        active_alerts=active_alerts,
+    )
+
+
+@app.patch(
+    "/api/v1/tanks/{id}/config",
+    response_model=schemas.TankResponse,
+    tags=["Tanks"],
+    dependencies=[Depends(require_roles("admin"))],
+)
+def update_tank_config(
+    id: int,
+    config: schemas.TankConfigUpdate,
+    db: Session = Depends(get_db),
+):
+    tank = get_tank_or_404(id, db)
+    updates = config.model_dump(exclude_unset=True)
+
+    pending_min = updates.get("temp_min", tank.temp_min)
+    pending_max = updates.get("temp_max", tank.temp_max)
+
+    if pending_min >= pending_max:
+        raise HTTPException(
+            status_code=400,
+            detail="temp_min deve ser menor que temp_max",
+        )
+
+    for field, value in updates.items():
+        setattr(tank, field, value)
+
+    db.commit()
+    db.refresh(tank)
+
+    latest = get_latest_reading(tank.id, db)
+
+    return schemas.TankResponse(
+        id=tank.id,
+        name=tank.name,
+        location=tank.location,
+        temp_min=tank.temp_min,
+        temp_max=tank.temp_max,
+        status=tank.status,
+        current_temperature=latest.temperature if latest else None,
+        last_reading_at=latest.recorded_at if latest else None,
+    )
+
+
+@app.get(
+    "/api/v1/alerts",
+    response_model=list[schemas.AlertResponse],
+    tags=["Alerts"],
+    dependencies=[Depends(require_roles(*PROTECTED_ROLES))],
+)
+def list_alerts(
+    status: str | None = Query(default=None, pattern="^(active|resolved)$"),
+    tank_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    query = db.query(models.Alert)
+
+    if status == "active":
+        query = query.filter(models.Alert.resolved_at.is_(None))
+    elif status == "resolved":
+        query = query.filter(models.Alert.resolved_at.isnot(None))
+
+    if tank_id is not None:
+        query = query.filter(models.Alert.tank_id == tank_id)
+
+    return query.order_by(models.Alert.fired_at.desc()).all()
+
+
+@app.patch(
+    "/api/v1/alerts/{id}/acknowledge",
+    response_model=schemas.AlertResponse,
+    tags=["Alerts"],
+)
+def acknowledge_alert(
+    id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_roles(*PROTECTED_ROLES)),
+):
+    alert = db.get(models.Alert, id)
+
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alerta nao encontrado")
+
+    alert.acknowledged_by = current_user["id"]
+    db.commit()
+    db.refresh(alert)
+
+    return alert
+
 
 @app.post(
     "/api/v1/batches",
@@ -686,54 +1030,6 @@ def delete_yeast_profile(id: int, db: Session = Depends(get_db)):
     return Response(status_code=204)
 
 @app.get(
-    "/api/v1/analytics/speed",
-    response_model=list[schemas.FermenterSpeedResponse],
-    tags=["Analytics"],
-    dependencies=[Depends(require_roles(*PROTECTED_ROLES))],
-)
-def get_attenuation_speed(
-    fermenter_id: str | None = Query(default=None, min_length=1),
-    date_from: datetime | None = Query(default=None),
-    date_to: datetime | None = Query(default=None),
-    db: Session = Depends(get_db),
-):
-    query = db.query(models.Reading).filter(
-        func.lower(models.Reading.metric).in_(["gravity", "specific_gravity", "sg"])
-    )
-
-    if fermenter_id:
-        query = query.filter(models.Reading.fermenter_id == fermenter_id)
-
-    if date_from:
-        query = query.filter(models.Reading.timestamp >= date_from)
-
-    if date_to:
-        query = query.filter(models.Reading.timestamp <= date_to)
-
-    readings = query.order_by(models.Reading.fermenter_id.asc(), models.Reading.timestamp.asc()).all()
-    grouped_points = defaultdict(list)
-
-    for reading in readings:
-        original_gravity = find_original_gravity_for_reading(reading, db)
-        grouped_points[reading.fermenter_id].append(
-            schemas.FermenterSpeedPoint(
-                fermenter_id=reading.fermenter_id,
-                timestamp=reading.timestamp,
-                gravity=reading.value,
-                original_gravity=original_gravity,
-                apparent_attenuation=calculate_apparent_attenuation(
-                    original_gravity,
-                    reading.value,
-                ),
-            )
-        )
-
-    return [
-        schemas.FermenterSpeedResponse(fermenter_id=fermenter_id, points=points)
-        for fermenter_id, points in grouped_points.items()
-    ]
-
-@app.get(
     "/batches/{id}/export",
     tags=["Batches"],
     dependencies=[Depends(require_roles(*PROTECTED_ROLES))],
@@ -790,8 +1086,8 @@ def export_batch(id: int, format: str = Query(default="csv"), db: Session = Depe
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
-@app.websocket("/ws/fermenters/{id}")
-async def fermenter_readings_websocket(websocket: WebSocket, id: str):
+@app.websocket("/ws/tanks/{id}")
+async def tank_readings_websocket(websocket: WebSocket, id: str):
     await websocket_hub.connect(id, websocket)
 
     try:
@@ -801,3 +1097,16 @@ async def fermenter_readings_websocket(websocket: WebSocket, id: str):
         pass
     finally:
         await websocket_hub.disconnect(id, websocket)
+
+
+@app.websocket("/ws/alerts")
+async def alerts_websocket(websocket: WebSocket):
+    await alerts_hub.connect(websocket)
+
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await alerts_hub.disconnect(websocket)
