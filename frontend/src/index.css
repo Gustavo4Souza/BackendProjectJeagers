@@ -1,0 +1,19 @@
+@import "tailwindcss";
+
+:root {
+  --color-brand: #1D9E75;
+  --color-warning: #EF9F27;
+  --color-warning-text: #BA7517;
+  --color-alert: #D85A30;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}

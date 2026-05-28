@@ -1,0 +1,23 @@
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["api"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = [
+    "E501",   # line too long — handled by formatter
+    "F401",   # unused imports in __init__ files
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["F401", "F811"]
+"migrations/*" = ["E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["api", "tests"]
+
+[tool.coverage.run]
+source = ["api"]
+omit = ["api/migrations/*", "api/scripts/*", "tests/*"]

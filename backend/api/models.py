@@ -1,7 +1,9 @@
 from datetime import datetime, timezone
 
 from sqlalchemy import BigInteger, Column, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy.dialects import sqlite as sqlite_dialect
 from sqlalchemy.orm import relationship
+
 from database import Base
 
 
@@ -43,7 +45,8 @@ class Tank(Base):
 class Reading(Base):
     __tablename__ = "readings"
 
-    id = Column(BigInteger, primary_key=True, index=True)
+    # BigInteger for PostgreSQL/TimescaleDB; Integer for SQLite (tests) so ROWID auto-increment works
+    id = Column(BigInteger().with_variant(sqlite_dialect.INTEGER(), "sqlite"), primary_key=True, index=True)
     tank_id = Column(Integer, ForeignKey("tanks.id"), nullable=False, index=True)
     temperature = Column(Float, nullable=False)
     recorded_at = Column(DateTime(timezone=True), nullable=False, index=True)

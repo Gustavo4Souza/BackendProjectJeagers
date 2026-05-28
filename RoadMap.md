@@ -130,14 +130,14 @@
 
 #### Fase 1 — Setup e Infraestrutura
 
-- [ ] Setup React + Vite + TypeScript + Tailwind CSS
-- [ ] Instância Axios centralizada em `services/api.ts` com interceptors de auth
-- [ ] Services tipados: `tanks.ts`, `readings.ts`, `alerts.ts`
-- [ ] React Query configurado: `QueryClient` com defaults de retry e stale time
-- [ ] Tipos globais em `types/index.ts`: `Tank`, `Reading`, `Alert`, `TankStatus`
-- [ ] Utilitários: `formatTemp`, `formatDateTime`, `formatRelative`, `getTankStatus`
-- [ ] Componentes base: `ErrorBanner`, `LoadingSkeleton`
-- [ ] Variáveis de ambiente: `VITE_API_URL`, `VITE_WS_URL`
+- [X] Setup React + Vite + TypeScript + Tailwind CSS
+- [X] Instância Axios centralizada em `services/api.ts` com interceptors de auth
+- [X] Services tipados: `tanks.ts`, `readings.ts`, `alerts.ts`
+- [X] React Query configurado: `QueryClient` com defaults de retry e stale time
+- [X] Tipos globais em `types/index.ts`: `Tank`, `Reading`, `Alert`, `TankStatus`
+- [X] Utilitários: `formatTemp`, `formatDateTime`, `formatRelative`, `getTankStatus`
+- [X] Componentes base: `ErrorBanner`, `LoadingSkeleton`
+- [X] Variáveis de ambiente: `VITE_API_URL`, `VITE_WS_URL`
 
 **Entregável:** app compila, Axios conecta na API, tipos definidos.
 
@@ -145,10 +145,10 @@
 
 #### Fase 2 — Hook de WebSocket
 
-- [ ] `useWebSocket(tankId, onReading)` — conecta em `WS /ws/tanks/{id}`
-- [ ] Reconexão automática com backoff exponencial (1s → 2s → 4s → máx 30s)
-- [ ] Desconecta no cleanup do `useEffect`
-- [ ] `onReading` atualiza `queryClient.setQueryData(['tanks'])` com nova temperatura
+- [X] `useWebSocket(tankId, onReading)` — conecta em `WS /ws/tanks/{id}`
+- [X] Reconexão automática com backoff exponencial (1s → 2s → 4s → máx 30s)
+- [X] Desconecta no cleanup do `useEffect`
+- [X] `onReading` atualiza `queryClient.setQueryData(['tanks'])` com nova temperatura
 
 **Entregável:** temperatura de cada panela atualizando em tempo real no estado do React Query.
 
@@ -156,14 +156,14 @@
 
 #### Fase 3 — Cards das 8 Panelas
 
-- [ ] `TankGrid.tsx` — grid 4×2 responsivo
-- [ ] `TankCard.tsx` — número da panela (discreto) + nome da bebida + temperatura atual
-- [ ] `TempBar.tsx` — barra colorida mostrando posição da temperatura na faixa
-- [ ] Semáforo visual: verde / amarelo / vermelho / cinza (offline) com dot e borda
-- [ ] Card selecionado: `outline: 2px solid #1D9E75`
-- [ ] `onSelect` ao clicar no card — atualiza `selectedTankId` no Dashboard
-- [ ] Ícone de engrenagem no topo direito — abre modal de configuração
-- [ ] Estado offline: dot cinza + temperatura "—" + pill "Offline" se sem leitura há 30s+
+- [X] `TankGrid.tsx` — grid 4×2 responsivo
+- [X] `TankCard.tsx` — número da panela (discreto) + nome da bebida + temperatura atual
+- [X] `TempBar.tsx` — barra colorida mostrando posição da temperatura na faixa
+- [X] Semáforo visual: verde / amarelo / vermelho / cinza (offline) com dot e borda
+- [X] Card selecionado: `outline: 2px solid #1D9E75`
+- [X] `onSelect` ao clicar no card — atualiza `selectedTankId` no Dashboard
+- [X] Ícone de engrenagem no topo direito — abre modal de configuração
+- [X] Estado offline: dot cinza + temperatura "—" + pill "Offline" se sem leitura há 30s+
 
 **Entregável:** 8 cards renderizando com temperatura ao vivo e semáforo correto.
 
@@ -171,13 +171,13 @@
 
 #### Fase 4 — Gráfico de Histórico
 
-- [ ] `TankHistoryChart.tsx` — Recharts `LineChart` com dados da panela selecionada
-- [ ] Título dinâmico: "Panela N · [nome da bebida]"
-- [ ] Seletor de período: 6h · 24h · 7d · 30d (estado local do componente)
-- [ ] `ReferenceLine` tracejada em `temp_min` (azul) e `temp_max` (vermelho)
-- [ ] Tooltip customizado com temperatura e horário formatado
-- [ ] Gráfico recarrega quando `selectedTankId` muda
-- [ ] Loading skeleton enquanto faz fetch
+- [X] `TankHistoryChart.tsx` — Recharts `LineChart` com dados da panela selecionada
+- [X] Título dinâmico: "Panela N · [nome da bebida]"
+- [X] Seletor de período: 6h · 24h · 7d · 30d (estado local do componente)
+- [X] `ReferenceLine` tracejada em `temp_min` (azul) e `temp_max` (vermelho)
+- [X] Tooltip customizado com temperatura e horário formatado
+- [X] Gráfico recarrega quando `selectedTankId` muda
+- [X] Loading skeleton enquanto faz fetch
 
 **Entregável:** clicar em um card atualiza o gráfico para aquela panela com histórico correto.
 
@@ -185,13 +185,13 @@
 
 #### Fase 5 — Painel de Alertas e Modal
 
-- [ ] `AlertPanel.tsx` — lista de alertas ativos com botão "Reconhecer" por item
-- [ ] Badge no `TopBar` com contagem de alertas ativos
-- [ ] Alertas chegam em tempo real via WebSocket (broadcast global)
-- [ ] `TankConfigModal.tsx` — editar nome da bebida, `temp_min` e `temp_max`
-- [ ] Validação inline no modal: `temp_min < temp_max`
-- [ ] Seção de controle (Fase 2) presente no modal, opacidade 0.4, `disabled`, badge "em breve"
-- [ ] Salvar chama `PATCH /api/v1/tanks/{id}/config` e fecha modal
+- [X] `AlertPanel.tsx` — lista de alertas ativos com botão "Reconhecer" por item
+- [X] Badge no `TopBar` com contagem de alertas ativos
+- [X] Alertas chegam em tempo real via WebSocket (broadcast global)
+- [X] `TankConfigModal.tsx` — editar nome da bebida, `temp_min` e `temp_max`
+- [X] Validação inline no modal: `temp_min < temp_max`
+- [X] Seção de controle (Fase 2) presente no modal, opacidade 0.4, `disabled`, badge "em breve"
+- [X] Salvar chama `PATCH /api/v1/tanks/{id}/config` e fecha modal
 
 **Entregável:** alertas reconhecíveis em tempo real + modal de configuração funcionando.
 
@@ -199,11 +199,11 @@
 
 #### Fase 6 — Autenticação no Frontend
 
-- [ ] Página de login com JWT — redireciona para Painel após autenticação
-- [ ] Proteção de rotas: redireciona para `/login` se sem token
-- [ ] Interceptor Axios: `Authorization: Bearer <token>` em todas as requisições
-- [ ] Interceptor Axios: em 401, limpa token e redireciona para `/login`
-- [ ] Refresh token automático antes de expirar
+- [X] Página de login com JWT — redireciona para Painel após autenticação
+- [X] Proteção de rotas: redireciona para `/login` se sem token
+- [X] Interceptor Axios: `Authorization: Bearer <token>` em todas as requisições
+- [X] Interceptor Axios: em 401, limpa token e redireciona para `/login`
+- [X] Refresh token automático antes de expirar
 
 **Entregável:** login funcionando, rotas protegidas, token renovado automaticamente.
 
@@ -217,10 +217,10 @@
 
 #### Fase 1 — Testes e Qualidade
 
-- [ ] Testes unitários no backend: cobertura mínima 60% por módulo (pytest + pytest-cov)
-- [ ] Testes de integração: simulador → API → banco → WebSocket
-- [ ] Lint sem erros: Ruff (Python) + ESLint + Prettier (TypeScript/React)
-- [ ] Testes de carga com k6: 8 conexões WebSocket simultâneas estáveis
+- [X] Testes unitários no backend: cobertura mínima 60% por módulo (pytest + pytest-cov)
+- [X] Testes de integração: simulador → API → banco → WebSocket
+- [X] Lint sem erros: Ruff (Python) + ESLint + Prettier (TypeScript/React)
+- [X] Testes de carga com k6: 8 conexões WebSocket simultâneas estáveis
 
 **Entregável:** pipeline de qualidade verde, cobertura ≥ 60%.
 
@@ -228,20 +228,20 @@
 
 #### Fase 2 — CI/CD e Deploy
 
-- [ ] GitHub Actions: lint → testes → build → deploy no merge para `main`
-- [ ] Deploy do backend no Railway ou Render (banco gerenciado em nuvem)
-- [ ] Deploy do frontend na Vercel com preview por branch
-- [ ] Variáveis de ambiente via secrets — nenhum secret commitado no repositório
-- [ ] HTTPS com certificado SSL automático nas plataformas cloud
-- [ ] Simulador apontando para o endpoint de produção
+- [X] GitHub Actions: lint → testes → build → deploy no merge para `main`
+- [X] Deploy do backend no Railway ou Render (banco gerenciado em nuvem)
+- [X] Deploy do frontend na Vercel com preview por branch
+- [X] Variáveis de ambiente via secrets — nenhum secret commitado no repositório
+- [X] HTTPS com certificado SSL automático nas plataformas cloud
+- [X] Simulador apontando para o endpoint de produção
 
 ---
 
 #### Fase 3 — Documentação e Apresentação
 
-- [ ] README completo com diagrama de arquitetura e guia de setup local
-- [ ] Guia de onboarding: como rodar com Docker Compose em 3 comandos
-- [ ] Slides de apresentação com demo ao vivo do sistema em produção
+- [X] README completo com diagrama de arquitetura e guia de setup local
+- [X] Guia de onboarding: como rodar com Docker Compose em 3 comandos
+- [X] Slides de apresentação com demo ao vivo do sistema em produção
 
 **Entregável:** sistema acessível via URL pública — pronto para apresentação final.
 

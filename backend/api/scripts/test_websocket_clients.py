@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 
 import websockets
 
-
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 WS_BASE_URL = os.getenv("WS_BASE_URL", "ws://localhost:8000")
 FERMENTER_ID = os.getenv("FERMENTER_ID", "fermenter-001")

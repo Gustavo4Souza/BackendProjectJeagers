@@ -1,6 +1,6 @@
 import asyncio
-import csv
 import contextlib
+import csv
 import io
 import json
 import os
@@ -8,7 +8,16 @@ from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import (
+    Depends,
+    FastAPI,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from redis.asyncio import Redis
@@ -16,7 +25,9 @@ from sqlalchemy import func, inspect, text
 from sqlalchemy.orm import Session
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-import models, schemas, auth
+import auth
+import models
+import schemas
 from database import SessionLocal, engine
 
 API_VERSION = os.getenv("API_VERSION", "0.1.0")
@@ -230,11 +241,22 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
         content={"detail": exc.detail},
     )
 
+def _serializable(obj):
+    """Recursively converts non-JSON-serializable objects (e.g. Pydantic v2 ctx exceptions) to str."""
+    if isinstance(obj, dict):
+        return {k: _serializable(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_serializable(item) for item in obj]
+    if isinstance(obj, Exception):
+        return str(obj)
+    return obj
+
+
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     return JSONResponse(
         status_code=422,
-        content={"detail": exc.errors()},
+        content={"detail": _serializable(exc.errors())},
     )
 
 @app.exception_handler(Exception)
