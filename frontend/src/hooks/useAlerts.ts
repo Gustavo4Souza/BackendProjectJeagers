@@ -1,13 +1,12 @@
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { useCallback } from 'react'
-import { alertsService } from '../services/alerts'
+import { alertsService, type AlertFilters } from '../services/alerts'
 import { useGenericWebSocket } from './useGenericWebSocket'
-import type { Alert } from '../types'
 
-export function useAlerts() {
+export function useAlerts(filters?: AlertFilters) {
   return useQuery({
-    queryKey: ['alerts'],
-    queryFn: alertsService.getActive,
+    queryKey: ['alerts', filters ?? { status: 'active' }],
+    queryFn: () => alertsService.getAll(filters ?? { status: 'active' }),
     refetchInterval: 10_000,
   })
 }
@@ -17,10 +16,19 @@ export function useAcknowledgeAlert() {
 
   return useMutation({
     mutationFn: (alertId: number) => alertsService.acknowledge(alertId),
-    onSuccess: (_, alertId) => {
-      queryClient.setQueryData<Alert[]>(['alerts'], (prev) =>
-        prev ? prev.filter((a) => a.id !== alertId) : prev
-      )
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['alerts'] })
+    },
+  })
+}
+
+export function useAcknowledgeAllAlerts() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: () => alertsService.acknowledgeAll(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['alerts'] })
     },
   })
 }
@@ -28,16 +36,9 @@ export function useAcknowledgeAlert() {
 export function useAlertsWebSocket() {
   const queryClient = useQueryClient()
 
-  const onAlert = useCallback(
-    (alert: Alert) => {
-      queryClient.setQueryData<Alert[]>(['alerts'], (prev) => {
-        if (!prev) return [alert]
-        if (prev.some((a) => a.id === alert.id)) return prev
-        return [alert, ...prev]
-      })
-    },
-    [queryClient]
-  )
+  const onAlert = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['alerts'] })
+  }, [queryClient])
 
-  useGenericWebSocket<Alert>('/ws/alerts', onAlert)
+  useGenericWebSocket('/ws/alerts', onAlert)
 }

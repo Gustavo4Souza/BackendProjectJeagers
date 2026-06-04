@@ -8,7 +8,7 @@ interface AlertPanelProps {
   isAcknowledging?: boolean
 }
 
-function AlertIcon({ type }: { type: Alert['type'] }) {
+function AlertIcon({ type }: { type: Alert['alert_type'] }) {
   if (type === 'above_max') {
     return (
       <svg className="w-4 h-4 text-red-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
@@ -74,17 +74,17 @@ export function AlertPanel({ alerts, onAcknowledge, isAcknowledging }: AlertPane
               <li key={alert.id} className="px-4 py-3 flex items-start gap-3">
                 {/* Icon */}
                 <div className="mt-0.5">
-                  <AlertIcon type={alert.type} />
+                  <AlertIcon type={alert.alert_type} />
                 </div>
 
                 {/* Info */}
                 <div className="flex-1 min-w-0">
                   <p className="text-xs font-semibold text-gray-800 truncate">
-                    {alert.tank_name}
+                    {alert.tank_name || `Panela ${alert.tank_id}`}
                   </p>
                   <p className="text-xs text-gray-500 mt-0.5">
                     {formatTemp(alert.temperature)} ·{' '}
-                    {alert.type === 'above_max' ? 'acima do máximo' : 'abaixo do mínimo'}
+                    {alert.alert_type === 'above_max' ? 'acima do máximo' : 'abaixo do mínimo'}
                   </p>
                   <p className="text-[11px] text-gray-400 mt-0.5">
                     {formatRelative(alert.fired_at)}

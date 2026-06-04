@@ -19,6 +19,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from redis.asyncio import Redis
 from sqlalchemy import func, inspect, text
@@ -34,6 +35,10 @@ API_VERSION = os.getenv("API_VERSION", "0.1.0")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 PROTECTED_ROLES = ("admin", "operador", "viewer")
 ALERTS_CHANNEL = "alerts:events"
+CONTROL_CHANNEL = "control:events"
+CONTROL_TOLERANCE = 0.3
+ETA_WINDOW_HOURS = 6
+ETA_MIN_READINGS = 10
 
 
 def tank_readings_channel(tank_id: int) -> str:
@@ -181,18 +186,79 @@ class AlertsWebSocketHub:
 alerts_hub = AlertsWebSocketHub()
 
 
+class ControlWebSocketHub:
+    def __init__(self):
+        self.clients: set = set()
+        self.subscriber: asyncio.Task | None = None
+        self.lock = asyncio.Lock()
+        self.redis = None
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        async with self.lock:
+            self.clients.add(websocket)
+            if self.subscriber is None or self.subscriber.done():
+                self.subscriber = asyncio.create_task(self.subscribe())
+
+    async def disconnect(self, websocket: WebSocket):
+        async with self.lock:
+            self.clients.discard(websocket)
+
+    async def subscribe(self):
+        pubsub = self.redis.pubsub()
+        try:
+            await pubsub.subscribe(CONTROL_CHANNEL)
+            async for message in pubsub.listen():
+                if message["type"] == "message":
+                    await self.broadcast(message["data"])
+        finally:
+            with contextlib.suppress(Exception):
+                await pubsub.unsubscribe(CONTROL_CHANNEL)
+                await pubsub.aclose()
+
+    async def broadcast(self, message: str):
+        async with self.lock:
+            clients = list(self.clients)
+        if not clients:
+            return
+        results = await asyncio.gather(
+            *(c.send_text(message) for c in clients),
+            return_exceptions=True,
+        )
+        stale = [c for c, r in zip(clients, results) if isinstance(r, Exception)]
+        if stale:
+            async with self.lock:
+                for c in stale:
+                    self.clients.discard(c)
+
+    async def close(self):
+        async with self.lock:
+            task = self.subscriber
+            self.subscriber = None
+            self.clients.clear()
+        if task:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+
+control_hub = ControlWebSocketHub()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.redis = Redis.from_url(REDIS_URL, decode_responses=True)
     await app.state.redis.ping()
     websocket_hub.redis = app.state.redis
     alerts_hub.redis = app.state.redis
+    control_hub.redis = app.state.redis
 
     try:
         yield
     finally:
         await websocket_hub.close()
         await alerts_hub.close()
+        await control_hub.close()
         await app.state.redis.aclose()
 
 # Tables auto-created on startup; use `alembic upgrade head` for fresh deployments.
@@ -200,8 +266,9 @@ models.Base.metadata.create_all(bind=engine)
 
 def ensure_schema_updates():
     inspector = inspect(engine)
+    table_names = inspector.get_table_names()
 
-    if "users" in inspector.get_table_names():
+    if "users" in table_names:
         user_columns = {column["name"] for column in inspector.get_columns("users")}
 
         if "role" not in user_columns:
@@ -211,6 +278,13 @@ def ensure_schema_updates():
                 )
 
 ensure_schema_updates()
+
+_CORS_ORIGINS_ENV = os.getenv("CORS_ORIGINS", "")
+CORS_ORIGINS: list[str] = (
+    [o.strip() for o in _CORS_ORIGINS_ENV.split(",") if o.strip()]
+    if _CORS_ORIGINS_ENV
+    else ["http://localhost:5173", "http://127.0.0.1:5173"]
+)
 
 app = FastAPI(
     title="EH Brewing API",
@@ -223,12 +297,22 @@ app = FastAPI(
     openapi_tags=[
         {"name": "Health", "description": "Status da aplicacao."},
         {"name": "Auth", "description": "Cadastro e login de usuarios."},
+        {"name": "Users", "description": "Gerenciamento de usuarios (somente admin)."},
         {"name": "Tanks", "description": "Panelas de armazenamento e suas leituras."},
         {"name": "Readings", "description": "Ingestao de leituras de temperatura."},
         {"name": "Alerts", "description": "Alertas de temperatura fora da faixa configurada."},
+        {"name": "Control", "description": "Controle de temperatura por panela (setpoint e ETA)."},
         {"name": "Batches", "description": "Gerenciamento de lotes de fermentacao."},
         {"name": "Yeast Profiles", "description": "Cadastro de perfis de levedura."},
     ],
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -293,6 +377,9 @@ def is_public_path(path: str):
 
 @app.middleware("http")
 async def authentication_middleware(request: Request, call_next):
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
     if is_public_path(request.url.path):
         return await call_next(request)
 
@@ -460,6 +547,16 @@ def get_active_alert(tank_id: int, db: Session) -> models.Alert | None:
     )
 
 
+def get_tank_control(tank_id: int, db: Session) -> models.TankControl | None:
+    return db.query(models.TankControl).filter(models.TankControl.tank_id == tank_id).first()
+
+
+def compute_control_mode(setpoint: float, current_temp: float) -> str:
+    if abs(current_temp - setpoint) <= CONTROL_TOLERANCE:
+        return "idle"
+    return "cooling" if setpoint < current_temp else "heating"
+
+
 def fire_or_resolve_alert(tank: models.Tank, temperature: float, db: Session) -> models.Alert | None:
     active_alert = get_active_alert(tank.id, db)
     out_of_range = temperature > tank.temp_max or temperature < tank.temp_min
@@ -582,6 +679,85 @@ def logout(payload: schemas.LogoutRequest, db: Session = Depends(get_db)):
 
     return {"msg": "Logout realizado com sucesso"}
 
+@app.get(
+    "/api/v1/users",
+    response_model=list[schemas.UserResponse],
+    tags=["Users"],
+    dependencies=[Depends(require_roles("admin"))],
+)
+def list_users(db: Session = Depends(get_db)):
+    return db.query(models.User).order_by(models.User.id).all()
+
+
+@app.get(
+    "/api/v1/users/{id}",
+    response_model=schemas.UserResponse,
+    tags=["Users"],
+    dependencies=[Depends(require_roles("admin"))],
+)
+def get_user(id: int, db: Session = Depends(get_db)):
+    user = db.get(models.User, id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario nao encontrado")
+    return user
+
+
+@app.patch(
+    "/api/v1/users/{id}",
+    response_model=schemas.UserResponse,
+    tags=["Users"],
+    dependencies=[Depends(require_roles("admin"))],
+)
+def update_user(id: int, update: schemas.UserUpdate, db: Session = Depends(get_db)):
+    user = db.get(models.User, id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario nao encontrado")
+    if update.role is not None:
+        user.role = update.role
+    if update.password is not None:
+        user.password = auth.hash_password(update.password)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@app.post(
+    "/api/v1/users",
+    response_model=schemas.UserResponse,
+    status_code=201,
+    tags=["Users"],
+    dependencies=[Depends(require_roles("admin"))],
+)
+def create_user_admin(user: schemas.UserCreate, db: Session = Depends(get_db)):
+    existing = db.query(models.User).filter(models.User.username == user.username).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Usuário já existe")
+    new_user = models.User(
+        username=user.username,
+        password=auth.hash_password(user.password),
+        role=user.role,
+    )
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    return new_user
+
+
+@app.delete(
+    "/api/v1/users/{id}",
+    status_code=204,
+    tags=["Users"],
+    dependencies=[Depends(require_roles("admin"))],
+)
+def delete_user(id: int, db: Session = Depends(get_db)):
+    user = db.get(models.User, id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario nao encontrado")
+    db.delete(user)
+    db.commit()
+    return Response(status_code=204)
+
+
 @app.post("/login", tags=["Auth"])
 def login(user: schemas.UserLogin, db: Session = Depends(get_db)):
     db_user = db.query(models.User).filter(models.User.username == user.username).first()
@@ -627,6 +803,17 @@ async def create_reading(
     if fired_alert:
         alert_payload = schemas.AlertResponse.model_validate(fired_alert).model_dump(mode="json")
         await request.app.state.redis.publish(ALERTS_CHANNEL, json.dumps(alert_payload))
+
+    control = get_tank_control(tank.id, db)
+    if control and control.mode != "idle":
+        new_mode = compute_control_mode(control.setpoint, new_reading.temperature)
+        if new_mode != control.mode:
+            control.mode = new_mode
+            control.updated_at = utc_now()
+            db.commit()
+            db.refresh(control)
+            ctrl_payload = schemas.TankControlResponse.model_validate(control).model_dump(mode="json")
+            await request.app.state.redis.publish(CONTROL_CHANNEL, json.dumps(ctrl_payload))
 
     return new_reading
 
@@ -684,6 +871,38 @@ def list_tank_readings(
     )
 
     return readings
+
+
+@app.get(
+    "/api/v1/tanks/{id}/readings/export",
+    tags=["Tanks"],
+    dependencies=[Depends(require_roles(*PROTECTED_ROLES))],
+)
+def export_tank_readings(
+    id: int,
+    period: str = Query(default="24h", pattern="^(6h|24h|7d|30d)$"),
+    db: Session = Depends(get_db),
+):
+    tank = get_tank_or_404(id, db)
+    since = utc_now() - PERIOD_DELTA[period]
+    readings = (
+        db.query(models.Reading)
+        .filter(models.Reading.tank_id == id, models.Reading.recorded_at >= since)
+        .order_by(models.Reading.recorded_at.asc())
+        .all()
+    )
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["id", "tank_id", "tank_name", "temperature", "recorded_at"])
+    for r in readings:
+        writer.writerow([r.id, r.tank_id, tank.name, r.temperature, r.recorded_at.isoformat()])
+    output.seek(0)
+    filename = f"tank-{id}-readings-{period}.csv"
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get(
@@ -766,14 +985,168 @@ def update_tank_config(
 
 
 @app.get(
+    "/api/v1/tanks/{id}/control",
+    response_model=schemas.TankControlResponse,
+    tags=["Control"],
+    dependencies=[Depends(require_roles(*PROTECTED_ROLES))],
+)
+def get_control(id: int, db: Session = Depends(get_db)):
+    get_tank_or_404(id, db)
+    control = get_tank_control(id, db)
+    if not control:
+        raise HTTPException(status_code=404, detail="Controle nao configurado para esta panela")
+    return control
+
+
+@app.post(
+    "/api/v1/tanks/{id}/control",
+    response_model=schemas.TankControlResponse,
+    tags=["Control"],
+)
+async def set_control(
+    id: int,
+    body: schemas.TankControlSet,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_roles("admin", "operador")),
+):
+    get_tank_or_404(id, db)
+
+    latest = get_latest_reading(id, db)
+    current_temp = latest.temperature if latest else body.setpoint
+
+    mode = compute_control_mode(body.setpoint, current_temp)
+
+    control = get_tank_control(id, db)
+    if control:
+        control.setpoint = body.setpoint
+        control.mode = mode
+        control.updated_at = utc_now()
+        control.updated_by = current_user["id"]
+    else:
+        control = models.TankControl(
+            tank_id=id,
+            setpoint=body.setpoint,
+            mode=mode,
+            updated_at=utc_now(),
+            updated_by=current_user["id"],
+        )
+        db.add(control)
+
+    db.commit()
+    db.refresh(control)
+
+    payload = schemas.TankControlResponse.model_validate(control).model_dump(mode="json")
+    await request.app.state.redis.publish(CONTROL_CHANNEL, json.dumps(payload))
+
+    return control
+
+
+@app.get(
+    "/api/v1/tanks/{id}/eta",
+    response_model=schemas.ETAResponse,
+    tags=["Control"],
+    dependencies=[Depends(require_roles(*PROTECTED_ROLES))],
+)
+def get_eta(id: int, db: Session = Depends(get_db)):
+    get_tank_or_404(id, db)
+
+    control = get_tank_control(id, db)
+    if not control:
+        raise HTTPException(status_code=404, detail="Controle nao configurado para esta panela")
+
+    since = utc_now() - timedelta(hours=ETA_WINDOW_HOURS)
+    readings = (
+        db.query(models.Reading)
+        .filter(models.Reading.tank_id == id, models.Reading.recorded_at >= since)
+        .order_by(models.Reading.recorded_at.asc())
+        .all()
+    )
+
+    latest = get_latest_reading(id, db)
+    current_temp = latest.temperature if latest else None
+
+    if len(readings) < ETA_MIN_READINGS or current_temp is None:
+        return schemas.ETAResponse(
+            eta_minutes=None,
+            rate_per_minute=None,
+            current_temp=current_temp,
+            setpoint=control.setpoint,
+            sufficient_data=False,
+        )
+
+    temps = [r.temperature for r in readings]
+    times = [as_aware_utc(r.recorded_at) for r in readings]
+
+    total_seconds = (times[-1] - times[0]).total_seconds()
+    if total_seconds <= 0:
+        return schemas.ETAResponse(
+            eta_minutes=None,
+            rate_per_minute=None,
+            current_temp=current_temp,
+            setpoint=control.setpoint,
+            sufficient_data=False,
+        )
+
+    rate_per_minute = (temps[-1] - temps[0]) / (total_seconds / 60)
+
+    distance = control.setpoint - current_temp
+
+    if abs(rate_per_minute) < 0.001:
+        return schemas.ETAResponse(
+            eta_minutes=None,
+            rate_per_minute=rate_per_minute,
+            current_temp=current_temp,
+            setpoint=control.setpoint,
+            sufficient_data=True,
+        )
+
+    eta_minutes = distance / rate_per_minute if rate_per_minute != 0 else None
+    if eta_minutes is not None and eta_minutes < 0:
+        eta_minutes = abs(eta_minutes)
+
+    return schemas.ETAResponse(
+        eta_minutes=round(eta_minutes, 1) if eta_minutes is not None else None,
+        rate_per_minute=round(rate_per_minute, 4),
+        current_temp=current_temp,
+        setpoint=control.setpoint,
+        sufficient_data=True,
+    )
+
+
+def build_alert_detail(alert: models.Alert, tanks_cache: dict, db: Session) -> schemas.AlertDetailResponse:
+    if alert.tank_id not in tanks_cache:
+        tanks_cache[alert.tank_id] = db.get(models.Tank, alert.tank_id)
+    tank = tanks_cache[alert.tank_id]
+    tank_name = tank.name if tank else f"Panela {alert.tank_id}"
+    alert_type = None
+    if tank:
+        if alert.temperature > tank.temp_max:
+            alert_type = "above_max"
+        elif alert.temperature < tank.temp_min:
+            alert_type = "below_min"
+    return schemas.AlertDetailResponse(
+        id=alert.id,
+        tank_id=alert.tank_id,
+        tank_name=tank_name,
+        temperature=alert.temperature,
+        alert_type=alert_type,
+        fired_at=alert.fired_at,
+        resolved_at=alert.resolved_at,
+        acknowledged_by=alert.acknowledged_by,
+    )
+
+
+@app.get(
     "/api/v1/alerts",
-    response_model=list[schemas.AlertResponse],
+    response_model=list[schemas.AlertDetailResponse],
     tags=["Alerts"],
     dependencies=[Depends(require_roles(*PROTECTED_ROLES))],
 )
 def list_alerts(
     status: str | None = Query(default=None, pattern="^(active|resolved)$"),
     tank_id: int | None = Query(default=None),
+    period: str | None = Query(default=None, pattern="^(24h|7d|30d)$"),
     db: Session = Depends(get_db),
 ):
     query = db.query(models.Alert)
@@ -786,12 +1159,18 @@ def list_alerts(
     if tank_id is not None:
         query = query.filter(models.Alert.tank_id == tank_id)
 
-    return query.order_by(models.Alert.fired_at.desc()).all()
+    if period and period in PERIOD_DELTA:
+        since = utc_now() - PERIOD_DELTA[period]
+        query = query.filter(models.Alert.fired_at >= since)
+
+    alerts = query.order_by(models.Alert.fired_at.desc()).all()
+    tanks_cache: dict = {}
+    return [build_alert_detail(a, tanks_cache, db) for a in alerts]
 
 
 @app.patch(
     "/api/v1/alerts/{id}/acknowledge",
-    response_model=schemas.AlertResponse,
+    response_model=schemas.AlertDetailResponse,
     tags=["Alerts"],
 )
 def acknowledge_alert(
@@ -808,7 +1187,31 @@ def acknowledge_alert(
     db.commit()
     db.refresh(alert)
 
-    return alert
+    return build_alert_detail(alert, {}, db)
+
+
+@app.post(
+    "/api/v1/alerts/acknowledge-all",
+    response_model=list[schemas.AlertDetailResponse],
+    tags=["Alerts"],
+)
+def acknowledge_all_alerts(
+    db: Session = Depends(get_db),
+    current_user=Depends(require_roles(*PROTECTED_ROLES)),
+):
+    active_unacked = (
+        db.query(models.Alert)
+        .filter(
+            models.Alert.resolved_at.is_(None),
+            models.Alert.acknowledged_by.is_(None),
+        )
+        .all()
+    )
+    for alert in active_unacked:
+        alert.acknowledged_by = current_user["id"]
+    db.commit()
+    tanks_cache: dict = {}
+    return [build_alert_detail(a, tanks_cache, db) for a in active_unacked]
 
 
 @app.post(
@@ -1132,3 +1535,16 @@ async def alerts_websocket(websocket: WebSocket):
         pass
     finally:
         await alerts_hub.disconnect(websocket)
+
+
+@app.websocket("/ws/control")
+async def control_websocket(websocket: WebSocket):
+    await control_hub.connect(websocket)
+
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await control_hub.disconnect(websocket)

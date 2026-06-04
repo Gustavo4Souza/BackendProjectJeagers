@@ -1,3 +1,4 @@
+import { NavLink } from 'react-router-dom'
 import { AlertBadge } from './AlertBadge'
 import { useAuth } from '../../context/AuthContext'
 
@@ -5,7 +6,13 @@ interface TopBarProps {
   alertCount: number
 }
 
-const NAV_LINKS = ['Painel', 'Histórico', 'Alertas', 'Config'] as const
+const NAV_ITEMS = [
+  { label: 'Painel', to: '/' },
+  { label: 'Histórico', to: '/historico' },
+  { label: 'Alertas', to: '/alertas' },
+  { label: 'Lotes', to: '/lotes' },
+  { label: 'Config', to: '/config' },
+] as const
 
 export function TopBar({ alertCount }: TopBarProps) {
   const { user, logout } = useAuth()
@@ -18,24 +25,29 @@ export function TopBar({ alertCount }: TopBarProps) {
         EH <span style={{ color: '#1D9E75' }}>Brewing</span>
       </span>
 
-      {/* Nav links — decorativas na V1 exceto Painel */}
+      {/* Nav links */}
       <nav className="hidden sm:flex items-center gap-1">
-        {NAV_LINKS.map((link) => (
-          <span
-            key={link}
-            className={`text-sm px-3 py-1.5 rounded-md font-medium cursor-default select-none ${
-              link === 'Painel' ? 'text-gray-900 bg-gray-100' : 'text-gray-400'
-            }`}
+        {NAV_ITEMS.map(({ label, to }) => (
+          <NavLink
+            key={to}
+            to={to}
+            end={to === '/'}
+            className={({ isActive }) =>
+              `text-sm px-3 py-1.5 rounded-md font-medium transition-colors ${
+                isActive
+                  ? 'text-gray-900 bg-gray-100'
+                  : 'text-gray-400 hover:text-gray-600 hover:bg-gray-50'
+              }`
+            }
           >
-            {link}
-          </span>
+            {label}
+          </NavLink>
         ))}
       </nav>
 
       {/* Right side: bell + user + logout */}
       <div className="flex items-center gap-4">
-        {/* Bell icon with badge */}
-        <div className="relative">
+        <NavLink to="/alertas" className="relative">
           <svg
             className={`w-5 h-5 ${alertCount > 0 ? 'text-red-500' : 'text-gray-400'}`}
             fill="currentColor"
@@ -44,9 +56,8 @@ export function TopBar({ alertCount }: TopBarProps) {
             <path d="M10 2a6 6 0 00-6 6v3.586l-.707.707A1 1 0 004 14h12a1 1 0 00.707-1.707L16 11.586V8a6 6 0 00-6-6zM10 18a3 3 0 01-2.83-2h5.66A3 3 0 0110 18z" />
           </svg>
           <AlertBadge count={alertCount} />
-        </div>
+        </NavLink>
 
-        {/* User avatar + name */}
         <div className="flex items-center gap-2">
           <div
             className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0"
@@ -57,7 +68,6 @@ export function TopBar({ alertCount }: TopBarProps) {
           <span className="hidden sm:block text-sm text-gray-600 font-medium">{userName}</span>
         </div>
 
-        {/* Logout button */}
         <button
           onClick={logout}
           className="hidden sm:flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600 transition-colors"

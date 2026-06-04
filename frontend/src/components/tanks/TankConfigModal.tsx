@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import type { Tank } from '../../types'
+import { useTankControl, useSetControl, useTankETA } from '../../hooks/useTankControl'
+import { ETADisplay } from '../control/ETADisplay'
 
 interface TankConfigModalProps {
   tank: Tank
@@ -9,12 +11,43 @@ interface TankConfigModalProps {
   saveError?: string | null
 }
 
+const MODE_PILL: Record<string, { label: string; cls: string }> = {
+  cooling: { label: '↓ Resfriando', cls: 'bg-blue-100 text-blue-700' },
+  heating: { label: '↑ Aquecendo', cls: 'bg-orange-100 text-orange-700' },
+  idle: { label: '✓ Estável', cls: 'bg-green-100 text-green-700' },
+}
+
 export function TankConfigModal({ tank, onClose, onSave, isSaving, saveError }: TankConfigModalProps) {
   const [name, setName] = useState(tank.name)
   const [tempMin, setTempMin] = useState(String(tank.temp_min))
   const [tempMax, setTempMax] = useState(String(tank.temp_max))
   const [validationError, setValidationError] = useState<string | null>(null)
   const overlayRef = useRef<HTMLDivElement>(null)
+
+  const { data: control } = useTankControl(tank.id)
+  const setControlMutation = useSetControl(tank.id)
+  const [setpointInput, setSetpointInput] = useState<string>(
+    control ? String(control.setpoint) : ''
+  )
+  const [controlError, setControlError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (control && !setpointInput) {
+      setSetpointInput(String(control.setpoint))
+    }
+  }, [control, setpointInput])
+
+  function handleApplySetpoint() {
+    setControlError(null)
+    const val = parseFloat(setpointInput)
+    if (isNaN(val)) {
+      setControlError('Informe um valor numérico válido.')
+      return
+    }
+    setControlMutation.mutate(val, {
+      onError: () => setControlError('Erro ao aplicar setpoint. Tente novamente.'),
+    })
+  }
 
   // Close on Escape key
   useEffect(() => {
@@ -121,46 +154,55 @@ export function TankConfigModal({ tank, onClose, onSave, isSaving, saveError }: 
             )}
           </div>
 
-          {/* Section 3 — Controle de temperatura (Fase 2 — desabilitado) */}
-          <div className="space-y-1.5 opacity-40 pointer-events-none select-none">
+          {/* Section 3 — Controle de temperatura */}
+          <div className="space-y-3">
             <div className="flex items-center gap-2">
               <label className="text-xs font-semibold text-gray-700 uppercase tracking-wide">
                 Controle de temperatura
               </label>
-              <span className="text-[10px] font-bold bg-gray-200 text-gray-500 px-1.5 py-0.5 rounded uppercase tracking-wide">
-                em breve
-              </span>
+              {control && (
+                <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wide ${MODE_PILL[control.mode]?.cls ?? 'bg-gray-100 text-gray-500'}`}>
+                  {MODE_PILL[control.mode]?.label ?? control.mode}
+                </span>
+              )}
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-xs text-gray-500 mb-1 block">Setpoint (°C)</label>
+
+            <div className="flex gap-2">
+              <div className="flex-1">
+                <label className="text-xs text-gray-500 mb-1 block">Temperatura alvo (°C)</label>
                 <input
                   type="number"
-                  disabled
-                  placeholder="—"
-                  className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 bg-gray-50 text-gray-400 cursor-not-allowed"
+                  value={setpointInput}
+                  onChange={(e) => { setSetpointInput(e.target.value); setControlError(null) }}
+                  step="0.5"
+                  min="-20"
+                  max="60"
+                  className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 text-gray-900 focus:outline-none focus:ring-2 focus:border-transparent"
+                  style={{ '--tw-ring-color': '#1D9E75' } as React.CSSProperties}
+                  placeholder="Ex: 8.0"
                 />
               </div>
+              <div className="flex items-end">
+                <button
+                  type="button"
+                  onClick={handleApplySetpoint}
+                  disabled={setControlMutation.isPending}
+                  className="text-sm text-white rounded-lg px-4 py-2 font-medium transition-opacity disabled:opacity-60 whitespace-nowrap"
+                  style={{ backgroundColor: '#1D9E75' }}
+                >
+                  {setControlMutation.isPending ? 'Aplicando...' : 'Aplicar setpoint'}
+                </button>
+              </div>
             </div>
-            <div className="grid grid-cols-2 gap-3 mt-2">
-              <button
-                type="button"
-                disabled
-                className="text-sm border border-gray-200 rounded-lg py-2 text-gray-400 bg-gray-50 cursor-not-allowed"
-              >
-                ❄ Resfriamento
-              </button>
-              <button
-                type="button"
-                disabled
-                className="text-sm border border-gray-200 rounded-lg py-2 text-gray-400 bg-gray-50 cursor-not-allowed"
-              >
-                🔥 Aquecimento
-              </button>
-            </div>
-            <p className="text-[11px] text-gray-400 mt-1">
-              Disponível na Fase 2 — requer CLP instalado
-            </p>
+
+            {controlError && (
+              <p className="text-xs text-red-500">{controlError}</p>
+            )}
+            {setControlMutation.isSuccess && (
+              <p className="text-xs text-green-600">Setpoint aplicado com sucesso.</p>
+            )}
+
+            <ETADisplay tankId={tank.id} />
           </div>
 
           {/* Actions */}

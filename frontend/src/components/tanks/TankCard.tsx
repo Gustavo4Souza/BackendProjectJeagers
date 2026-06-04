@@ -1,4 +1,5 @@
-import type { Tank } from '../../types'
+import { useQueryClient } from '@tanstack/react-query'
+import type { Tank, TankControl } from '../../types'
 import { getTankStatus } from '../../utils/getTankStatus'
 import { formatTemp } from '../../utils/formatTemp'
 import { formatRelative } from '../../utils/formatDateTime'
@@ -46,9 +47,16 @@ const PILL_LABEL: Record<ReturnType<typeof getTankStatus>, string> = {
   offline: 'Offline',
 }
 
+const CONTROL_PILL: Record<string, { label: string; cls: string }> = {
+  cooling: { label: '↓ Resfriando', cls: 'bg-blue-100 text-blue-700' },
+  heating: { label: '↑ Aquecendo', cls: 'bg-orange-100 text-orange-700' },
+}
+
 export function TankCard({ tank, isSelected, onSelect, onConfig }: TankCardProps) {
   const status = getTankStatus(tank)
   const isOffline = status === 'offline'
+  const queryClient = useQueryClient()
+  const control = queryClient.getQueryData<TankControl>(['control', tank.id])
 
   const cardStyle: React.CSSProperties = {
     borderColor: BORDER_COLOR[status],
@@ -114,11 +122,18 @@ export function TankCard({ tank, isSelected, onSelect, onConfig }: TankCardProps
         <div className="w-full h-1 bg-gray-100 rounded-full" />
       )}
 
-      {/* Footer: pill + last reading */}
-      <div className="flex items-center justify-between mt-3">
-        <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${PILL_CLASS[status]}`}>
-          {PILL_LABEL[status]}
-        </span>
+      {/* Footer: pills + last reading */}
+      <div className="flex items-center justify-between mt-3 gap-1 flex-wrap">
+        <div className="flex items-center gap-1.5">
+          <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${PILL_CLASS[status]}`}>
+            {PILL_LABEL[status]}
+          </span>
+          {control && control.mode !== 'idle' && CONTROL_PILL[control.mode] && (
+            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${CONTROL_PILL[control.mode].cls}`}>
+              {CONTROL_PILL[control.mode].label}
+            </span>
+          )}
+        </div>
         {tank.last_reading_at && !isOffline && (
           <span className="text-xs text-gray-400">
             {formatRelative(tank.last_reading_at)}

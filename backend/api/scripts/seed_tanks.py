@@ -14,6 +14,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from datetime import datetime, timezone
+
 import auth
 import models
 from database import SessionLocal, engine
@@ -113,6 +115,42 @@ def seed_tanks(db) -> int:
     return created
 
 
+DEFAULT_CONTROL_SETPOINTS = {
+    1: 15.0,
+    2: 12.0,
+    3: 18.0,
+    4: 14.0,
+    5: 16.0,
+    6: 13.0,
+    7: 17.0,
+    8: 15.5,
+}
+
+
+def seed_tank_controls(db) -> int:
+    created = 0
+
+    for tank_id, setpoint in DEFAULT_CONTROL_SETPOINTS.items():
+        existing = db.query(models.TankControl).filter(models.TankControl.tank_id == tank_id).first()
+
+        if existing:
+            print(f"  [skip] Controle panela {tank_id} — já existe (setpoint={existing.setpoint}°C, mode={existing.mode})")
+            continue
+
+        control = models.TankControl(
+            tank_id=tank_id,
+            setpoint=setpoint,
+            mode="idle",
+            updated_at=datetime.now(timezone.utc),
+        )
+        db.add(control)
+        created += 1
+        print(f"  [ok]   Controle panela {tank_id} criado — setpoint={setpoint}°C, mode=idle")
+
+    db.commit()
+    return created
+
+
 def seed_admin(db, username: str, password: str) -> bool:
     existing = db.query(models.User).filter(models.User.username == username).first()
 
@@ -170,6 +208,10 @@ def main():
             print("=== Seed: Usuário Admin ===")
             seed_admin(db, args.admin_user, args.admin_password)
             print()
+
+        print("=== Seed: Controles de Temperatura ===")
+        nc = seed_tank_controls(db)
+        print(f"→ {nc} controle(s) criado(s).\n")
 
     finally:
         db.close()

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useTanks, useTankWebSocket, useUpdateTankConfig } from '../hooks/useTanks'
 import { useAlerts, useAcknowledgeAlert, useAlertsWebSocket } from '../hooks/useAlerts'
+import { useControlWebSocket } from '../hooks/useTankControl'
 import { TopBar } from '../components/layout/TopBar'
 import { TankGrid } from '../components/tanks/TankGrid'
 import { TankHistoryChart } from '../components/chart/TankHistoryChart'
@@ -17,6 +18,11 @@ function TankWebSocketConnector({ tankId }: { tankId: number }) {
 
 function AlertsWebSocketConnector() {
   useAlertsWebSocket()
+  return null
+}
+
+function ControlWebSocketConnector() {
+  useControlWebSocket()
   return null
 }
 
@@ -52,6 +58,7 @@ export default function Dashboard() {
         <TankWebSocketConnector key={id} tankId={id} />
       ))}
       <AlertsWebSocketConnector />
+      <ControlWebSocketConnector />
 
       <TopBar alertCount={alerts.length} />
 

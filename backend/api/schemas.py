@@ -10,6 +10,17 @@ class UserCreate(BaseModel):
     password: str
     role: UserRole = "viewer"
 
+class UserResponse(BaseModel):
+    id: int
+    username: str
+    role: UserRole
+
+    model_config = ConfigDict(from_attributes=True)
+
+class UserUpdate(BaseModel):
+    role: Optional[UserRole] = None
+    password: Optional[str] = None
+
 class UserLogin(BaseModel):
     username: str
     password: str
@@ -56,6 +67,11 @@ class AlertResponse(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+
+class AlertDetailResponse(AlertResponse):
+    tank_name: str = ""
+    alert_type: Optional[str] = None  # 'above_max' | 'below_min'
+
 class TankStatusResponse(BaseModel):
     tank_id: int
     name: str
@@ -90,6 +106,31 @@ class ReadingResponse(BaseModel):
     recorded_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+ControlMode = Literal["cooling", "heating", "idle"]
+
+
+class TankControlSet(BaseModel):
+    setpoint: float = Field(..., ge=-20, le=60)
+
+
+class TankControlResponse(BaseModel):
+    tank_id: int
+    setpoint: float
+    mode: ControlMode
+    updated_at: datetime
+    updated_by: Optional[int] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ETAResponse(BaseModel):
+    eta_minutes: Optional[float]
+    rate_per_minute: Optional[float]
+    current_temp: Optional[float]
+    setpoint: float
+    sufficient_data: bool
+
 
 BatchStatus = Literal["planned", "active", "completed", "cancelled"]
 

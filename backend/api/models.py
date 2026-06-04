@@ -40,6 +40,7 @@ class Tank(Base):
 
     readings = relationship("Reading", back_populates="tank")
     alerts = relationship("Alert", back_populates="tank")
+    control = relationship("TankControl", back_populates="tank", uselist=False)
 
 
 class Reading(Base):
@@ -120,6 +121,20 @@ class Batch(Base):
         cascade="all, delete-orphan",
         order_by="BatchEvent.occurred_at",
     )
+
+
+class TankControl(Base):
+    __tablename__ = "tank_control"
+
+    id = Column(Integer, primary_key=True, index=True)
+    tank_id = Column(Integer, ForeignKey("tanks.id"), unique=True, nullable=False, index=True)
+    setpoint = Column(Float, nullable=False)
+    mode = Column(String(20), default="idle", nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+
+    tank = relationship("Tank", back_populates="control")
+    updated_by_user = relationship("User")
 
 
 class BatchEvent(Base):

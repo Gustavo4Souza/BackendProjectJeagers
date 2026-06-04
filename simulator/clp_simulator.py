@@ -2,6 +2,7 @@
 """
 Simulador de CLP — EH Brewing
 Simula 8 panelas de armazenamento enviando leituras de temperatura para a API.
+Suporta controle ativo (cooling / heating / idle) via consulta à API.
 """
 
 import argparse
@@ -17,7 +18,6 @@ from typing import Optional
 
 import requests
 
-# Setpoints padrão por panela (temperatura alvo em °C)
 DEFAULT_SETPOINTS = {
     1: 15.0,
     2: 12.0,
@@ -29,34 +29,49 @@ DEFAULT_SETPOINTS = {
     8: 15.5,
 }
 
+CONTROL_TOLERANCE = 0.3
+
 
 @dataclass
 class TankSimulator:
     """Simula a dinâmica de temperatura de uma única panela."""
 
     tank_id: int
-    setpoint: float
+    default_setpoint: float
     noise_std: float = 0.3
     current_temp: float = field(init=False)
 
     def __post_init__(self):
-        self.current_temp = self.setpoint + random.gauss(0, self.noise_std)
+        self.current_temp = self.default_setpoint + random.gauss(0, self.noise_std)
 
-    def read(self, fault_temp: Optional[float] = None) -> float:
-        """Retorna a temperatura atual com ruído gaussiano.
-
-        Se fault_temp for informado, retorna esse valor com pequeno ruído
-        para simular uma falha de temperatura na panela.
-        """
+    def step(
+        self,
+        mode: str,
+        setpoint: float,
+        cooling_rate: float,
+        heating_rate: float,
+        fault_temp: Optional[float] = None,
+    ) -> float:
         if fault_temp is not None:
             return round(fault_temp + random.gauss(0, 0.1), 2)
 
-        # Dinâmica de primeira ordem: tende ao setpoint com ruído
-        self.current_temp = (
-            0.95 * self.current_temp
-            + 0.05 * self.setpoint
-            + random.gauss(0, self.noise_std)
-        )
+        near_setpoint = abs(self.current_temp - setpoint) <= CONTROL_TOLERANCE
+
+        if near_setpoint:
+            self.current_temp += random.gauss(0, 0.05)
+        elif mode == "cooling":
+            self.current_temp -= cooling_rate
+            self.current_temp += random.gauss(0, 0.1)
+        elif mode == "heating":
+            self.current_temp += heating_rate
+            self.current_temp += random.gauss(0, 0.1)
+        else:
+            self.current_temp = (
+                0.95 * self.current_temp
+                + 0.05 * self.default_setpoint
+                + random.gauss(0, self.noise_std)
+            )
+
         return round(self.current_temp, 2)
 
 
@@ -71,6 +86,8 @@ class CLPSimulator:
         fault_temp: Optional[float],
         username: str,
         password: str,
+        cooling_rate: float,
+        heating_rate: float,
     ):
         self.api_url = api_url.rstrip("/")
         self.interval = interval
@@ -78,6 +95,8 @@ class CLPSimulator:
         self.fault_temp = fault_temp
         self.username = username
         self.password = password
+        self.cooling_rate = cooling_rate
+        self.heating_rate = heating_rate
 
         self.session = requests.Session()
         self.access_token: Optional[str] = None
@@ -120,16 +139,35 @@ class CLPSimulator:
             return False
 
     # ------------------------------------------------------------------
+    # Consulta de controle
+    # ------------------------------------------------------------------
+
+    def _get_control(self, tank_id: int) -> tuple[str, float]:
+        """Retorna (mode, setpoint) para a panela. Usa idle e setpoint padrão em caso de erro."""
+        try:
+            response = self.session.get(
+                f"{self.api_url}/api/v1/tanks/{tank_id}/control",
+                timeout=5,
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                return data.get("mode", "idle"), data.get("setpoint", DEFAULT_SETPOINTS[tank_id])
+
+            if response.status_code == 401:
+                logging.warning("Token expirado ao consultar controle — re-autenticando...")
+                self.access_token = None
+
+        except requests.RequestException as exc:
+            logging.debug("Erro ao consultar controle panela %d: %s", tank_id, exc)
+
+        return "idle", DEFAULT_SETPOINTS[tank_id]
+
+    # ------------------------------------------------------------------
     # Envio de leitura
     # ------------------------------------------------------------------
 
     def _send_reading(self, tank_id: int, temperature: float) -> bool:
-        """Envia uma leitura para a API.
-
-        Retorna True em caso de sucesso ou erro não-crítico.
-        Retorna False se o token expirou (401) — sinaliza re-login.
-        Lança requests.RequestException em caso de falha de rede.
-        """
         payload = {
             "tank_id": tank_id,
             "temperature": temperature,
@@ -153,11 +191,10 @@ class CLPSimulator:
 
         if response.status_code == 404:
             logging.warning(
-                "Panela %d não cadastrada na API (404). "
-                "Execute o seed inicial antes de usar o simulador.",
+                "Panela %d não cadastrada na API (404). Execute o seed inicial.",
                 tank_id,
             )
-            return True  # Não é erro de conexão; continue o ciclo
+            return True
 
         logging.warning(
             "Panela %d: resposta inesperada HTTP %d.", tank_id, response.status_code
@@ -177,6 +214,11 @@ class CLPSimulator:
             self.api_url,
             self.interval,
         )
+        logging.info(
+            "Parâmetros de controle | cooling-rate: %.2f°C/ciclo | heating-rate: %.2f°C/ciclo",
+            self.cooling_rate,
+            self.heating_rate,
+        )
 
         if self.fault_tank:
             logging.info(
@@ -186,14 +228,12 @@ class CLPSimulator:
             )
 
         while self.running:
-            # Garante token válido antes do ciclo
             if not self.access_token:
                 if not self._login():
                     self._wait_retry("Login falhou")
                     continue
                 self._reset_retry()
 
-            # Ciclo de leitura das 8 panelas
             cycle_ok = self._run_cycle()
 
             if cycle_ok:
@@ -206,12 +246,25 @@ class CLPSimulator:
                 self._wait_retry("Falha no ciclo")
 
     def _run_cycle(self) -> bool:
-        """Lê e envia a temperatura de todas as 8 panelas. Retorna False em falha de rede."""
         for tank_id, tank in self.tanks.items():
-            fault_temp = (
-                self.fault_temp if tank_id == self.fault_tank else None
+            fault_temp = self.fault_temp if tank_id == self.fault_tank else None
+
+            mode, setpoint = self._get_control(tank_id)
+            if not self.access_token:
+                return False
+
+            temperature = tank.step(
+                mode=mode,
+                setpoint=setpoint,
+                cooling_rate=self.cooling_rate,
+                heating_rate=self.heating_rate,
+                fault_temp=fault_temp,
             )
-            temperature = tank.read(fault_temp)
+
+            logging.debug(
+                "Panela %d | mode=%s | setpoint=%.1f°C | temp=%.2f°C",
+                tank_id, mode, setpoint, temperature,
+            )
 
             try:
                 ok = self._send_reading(tank_id, temperature)
@@ -220,7 +273,7 @@ class CLPSimulator:
                 return False
 
             if not ok:
-                return False  # Token expirado — força re-login
+                return False
 
         return True
 
@@ -229,7 +282,6 @@ class CLPSimulator:
     # ------------------------------------------------------------------
 
     def _interruptible_sleep(self, seconds: float):
-        """Sleep em fatias de 0.5s para reagir ao sinal de shutdown rapidamente."""
         elapsed = 0.0
         while self.running and elapsed < seconds:
             time.sleep(min(0.5, seconds - elapsed))
@@ -285,6 +337,20 @@ def parse_args() -> argparse.Namespace:
         help="Temperatura injetada na panela com falha",
     )
     parser.add_argument(
+        "--cooling-rate",
+        type=float,
+        default=float(os.getenv("SIMULATOR_COOLING_RATE", "0.3")),
+        metavar="GRAUS_C",
+        help="Taxa de resfriamento por ciclo (°C/ciclo)",
+    )
+    parser.add_argument(
+        "--heating-rate",
+        type=float,
+        default=float(os.getenv("SIMULATOR_HEATING_RATE", "0.2")),
+        metavar="GRAUS_C",
+        help="Taxa de aquecimento por ciclo (°C/ciclo)",
+    )
+    parser.add_argument(
         "--username",
         default=os.getenv("SIMULATOR_USERNAME", "admin"),
         help="Usuário com role operador ou admin",
@@ -329,6 +395,8 @@ def main():
         fault_temp=args.fault_temp,
         username=args.username,
         password=args.password,
+        cooling_rate=args.cooling_rate,
+        heating_rate=args.heating_rate,
     )
 
     simulator.run()
