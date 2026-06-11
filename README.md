@@ -277,85 +277,87 @@ python simulator/clp_simulator.py --api-url https://seu-backend.railway.app
 
 Use esta lista para validar o funcionamento completo do sistema. Todos os testes devem ser executados com os containers rodando (`docker compose up -d`) e o banco populado (seed executado).
 
+> Recomendação: use o **Swagger UI** em http://localhost:8000/docs para executar todas as chamadas abaixo de forma interativa — sem precisar de Postman ou curl.
+
 ### Autenticação
 
-- [ ] **Login válido** — `POST /auth/login` com `admin` / `admin123` retorna `access_token` e `refresh_token`
-- [ ] **Login inválido** — senha errada retorna `401`
-- [ ] **Refresh de token** — `POST /auth/refresh` com o refresh token retorna novos tokens
-- [ ] **Logout** — `POST /auth/logout` revoga o refresh token; usar o token revogado retorna `401`
-- [ ] **Rota protegida sem token** — `GET /api/v1/tanks` sem Authorization retorna `401`
-- [ ] **Token inválido** — Bearer com string aleatória retorna `401`
+- [x] **Login válido** — `POST /auth/login` com `admin` / `admin123` retorna `access_token` e `refresh_token`
+- [x] **Login inválido** — senha errada retorna `401`
+- [x] **Refresh de token** — `POST /auth/refresh` com o refresh token retorna novos tokens
+- [x] **Logout** — `POST /auth/logout` revoga o refresh token; usar o token revogado retorna `401`
+- [x] **Rota protegida sem token** — `GET /api/v1/tanks` sem Authorization retorna `401`
+- [x] **Token inválido** — Bearer com string aleatória retorna `401`
 
 ### Panelas (Tanks)
 
-- [ ] **Listar panelas** — `GET /api/v1/tanks` retorna lista com 8 panelas após o seed
-- [ ] **Campos da panela** — resposta inclui `id`, `name`, `temp_min`, `temp_max`, `current_temperature`, `last_reading_at`
-- [ ] **Status da panela** — `GET /api/v1/tanks/{id}/status` retorna `tank_status`
-- [ ] **Status 404** — tanque inexistente retorna `404`
-- [ ] **Admin edita config** — `PATCH /api/v1/tanks/{id}/config` com role `admin` retorna `200`
-- [ ] **Viewer não pode editar** — mesmo endpoint com role `viewer` retorna `403`
-- [ ] **Faixa inválida** — `temp_min > temp_max` retorna `400` ou `422`
+- [x] **Listar panelas** — `GET /api/v1/tanks` retorna lista com 8 panelas após o seed
+- [x] **Campos da panela** — resposta inclui `id`, `name`, `temp_min`, `temp_max`, `current_temperature`, `last_reading_at`
+- [x] **Status da panela** — `GET /api/v1/tanks/{id}/status` retorna `tank_status`
+- [x] **Status 404** — tanque inexistente retorna `404`
+- [x] **Admin edita config** — `PATCH /api/v1/tanks/{id}/config` com role `admin` retorna `200`
+- [x] **Viewer não pode editar** — mesmo endpoint com role `viewer` retorna `403`
+- [x] **Faixa inválida** — `temp_min > temp_max` retorna `400` ou `422`
 
 ### Leituras (Readings)
 
-- [ ] **Operador envia leitura** — `POST /api/v1/readings` com `{"tank_id": 1, "temperature": 15.0}` retorna `201`
-- [ ] **Admin envia leitura** — mesmo endpoint com role `admin` retorna `201`
-- [ ] **Viewer não envia leitura** — role `viewer` retorna `403`
-- [ ] **Panela inexistente** — `tank_id` inválido retorna `404`
-- [ ] **Temperatura atualizada** — após enviar leitura, `GET /api/v1/tanks` mostra `current_temperature` atualizada
-- [ ] **Leituras publicadas no Redis** — enviar leitura chama `redis.publish` (verificar nos logs da API)
-- [ ] **Histórico de leituras** — `GET /api/v1/tanks/{id}/readings?period=24h` retorna lista
-- [ ] **Períodos válidos** — aceita `6h`, `24h`, `7d`, `30d`
-- [ ] **Período inválido** — `99h` retorna `422`
+- [x] **Operador envia leitura** — `POST /api/v1/readings` com `{"tank_id": 1, "temperature": 15.0}` retorna `201`
+- [x] **Admin envia leitura** — mesmo endpoint com role `admin` retorna `201`
+- [x] **Viewer não envia leitura** — role `viewer` retorna `403`
+- [x] **Panela inexistente** — `tank_id` inválido retorna `404`
+- [x] **Temperatura atualizada** — após enviar leitura, `GET /api/v1/tanks` mostra `current_temperature` atualizada
+- [x] **Leituras publicadas no Redis** — enviar leitura chama `redis.publish` (verificar nos logs da API)
+- [x] **Histórico de leituras** — `GET /api/v1/tanks/{id}/readings?period=24h` retorna lista
+- [x] **Períodos válidos** — aceita `6h`, `24h`, `7d`, `30d`
+- [x] **Período inválido** — `99h` retorna `422`
 
 ### Alertas
 
-- [ ] **Alerta disparado** — enviar temperatura acima de `temp_max` cria alerta ativo
-- [ ] **Alerta não duplicado** — duas leituras fora do limite mantêm apenas 1 alerta ativo
-- [ ] **Alerta resolvido automaticamente** — leitura dentro do limite resolve alerta ativo
-- [ ] **Listar alertas** — `GET /api/v1/alerts` retorna lista
-- [ ] **Filtro por status** — `?status=active` e `?status=resolved` funcionam
-- [ ] **Status inválido** — `?status=unknown` retorna `422`
-- [ ] **Reconhecer alerta** — `PATCH /api/v1/alerts/{id}/acknowledge` retorna `200`
-- [ ] **Reconhecer alerta inexistente** — retorna `404`
+- [x] **Alerta disparado** — enviar temperatura acima de `temp_max` cria alerta ativo
+- [x] **Alerta não duplicado** — duas leituras fora do limite mantêm apenas 1 alerta ativo
+- [x] **Alerta resolvido automaticamente** — leitura dentro do limite resolve alerta ativo
+- [x] **Listar alertas** — `GET /api/v1/alerts` retorna lista
+- [x] **Filtro por status** — `?status=active` e `?status=resolved` funcionam
+- [x] **Status inválido** — `?status=unknown` retorna `422`
+- [x] **Reconhecer alerta** — `PATCH /api/v1/alerts/{id}/acknowledge` retorna `200`
+- [x] **Reconhecer alerta inexistente** — retorna `404`
 
 ### Lotes (Batches)
 
-- [ ] **Criar lote** — `POST /api/v1/batches` com operador retorna `201` e `status: planned`
-- [ ] **Viewer não cria lote** — role `viewer` retorna `403`
-- [ ] **Listar lotes** — `GET /api/v1/batches` retorna lista
-- [ ] **Buscar lote por ID** — `GET /api/v1/batches/{id}` retorna detalhe
-- [ ] **Lote 404** — ID inexistente retorna `404`
-- [ ] **Atualizar lote** — `PATCH /api/v1/batches/{id}` com `{"status": "active"}` retorna `200`
-- [ ] **Filtrar por status** — `?status=planned` retorna apenas lotes planejados
-- [ ] **Adicionar evento** — `PATCH /api/v1/batches/{id}/events` com `gravity_reading` retorna `201`
-- [ ] **Exportar CSV** — `GET /api/v1/batches/{id}/export?format=csv` retorna `Content-Type: text/csv`
-- [ ] **Formato inválido** — `?format=pdf` retorna `400`
-- [ ] **ABV calculado** — lote completo com `original_gravity` e `final_gravity` retorna `abv > 0`
+- [x] **Criar lote** — `POST /api/v1/batches` com operador retorna `201` e `status: planned`
+- [x] **Viewer não cria lote** — role `viewer` retorna `403`
+- [x] **Listar lotes** — `GET /api/v1/batches` retorna lista
+- [x] **Buscar lote por ID** — `GET /api/v1/batches/{id}` retorna detalhe
+- [x] **Lote 404** — ID inexistente retorna `404`
+- [x] **Atualizar lote** — `PATCH /api/v1/batches/{id}` com `{"status": "active"}` retorna `200`
+- [x] **Filtrar por status** — `?status=planned` retorna apenas lotes planejados
+- [x] **Adicionar evento** — `PATCH /api/v1/batches/{id}/events` com `gravity_reading` retorna `201`
+- [x] **Exportar CSV** — `GET /api/v1/batches/{id}/export?format=csv` retorna `Content-Type: text/csv`
+- [x] **Formato inválido** — `?format=pdf` retorna `400`
+- [x] **ABV calculado** — lote completo com `original_gravity` e `final_gravity` retorna `abv > 0`
 
 ### Perfis de Levedura (Yeast Profiles)
 
-- [ ] **Listar perfis** — `GET /api/v1/yeast_profiles` retorna lista
-- [ ] **Admin cria perfil** — `POST /api/v1/yeast_profiles` com `{"name": "WY1056"}` retorna `201`
-- [ ] **Viewer não cria** — role `viewer` retorna `403`
-- [ ] **Nome duplicado** — criar perfil com mesmo nome retorna `400`
-- [ ] **Buscar por ID** — `GET /api/v1/yeast_profiles/{id}` retorna detalhe
-- [ ] **ID inexistente** — retorna `404`
-- [ ] **Atualizar perfil** — `PATCH /api/v1/yeast_profiles/{id}` retorna `200`
-- [ ] **Deletar perfil** — `DELETE /api/v1/yeast_profiles/{id}` retorna `204`
-- [ ] **Não deleta perfil vinculado a lote** — retorna `400`
+- [x] **Listar perfis** — `GET /api/v1/yeast_profiles` retorna lista
+- [x] **Admin cria perfil** — `POST /api/v1/yeast_profiles` com `{"name": "WY1056"}` retorna `201`
+- [x] **Viewer não cria** — role `viewer` retorna `403`
+- [x] **Nome duplicado** — criar perfil com mesmo nome retorna `400`
+- [x] **Buscar por ID** — `GET /api/v1/yeast_profiles/{id}` retorna detalhe
+- [x] **ID inexistente** — retorna `404`
+- [x] **Atualizar perfil** — `PATCH /api/v1/yeast_profiles/{id}` retorna `200`
+- [x] **Deletar perfil** — `DELETE /api/v1/yeast_profiles/{id}` retorna `204`
+- [x] **Não deleta perfil vinculado a lote** — retorna `400`
 
 ### WebSocket
 
-- [ ] **Conexão WebSocket** — conectar em `ws://localhost:8000/ws/tanks/{id}` estabelece conexão (status 101)
-- [ ] **Mensagem recebida** — enviar leitura via API faz o WebSocket receber mensagem com `tank_id`, `temperature`, `recorded_at`
-- [ ] **8 conexões simultâneas** — abrir 8 conexões (uma por panela) sem erro
+- [x] **Conexão WebSocket** — conectar em `ws://localhost:8000/ws/tanks/{id}` estabelece conexão (status 101)
+- [x] **Mensagem recebida** — enviar leitura via API faz o WebSocket receber mensagem com `tank_id`, `temperature`, `recorded_at`
+- [x] **8 conexões simultâneas** — abrir 8 conexões (uma por panela) sem erro
 
 ### Documentação da API
 
-- [ ] **Swagger UI** — http://localhost:8000/docs abre sem autenticação (200)
-- [ ] **ReDoc** — http://localhost:8000/redoc abre sem autenticação (200)
-- [ ] **Health check** — `GET /health` retorna `{"status": "ok"}` com campo `version`
+- [x] **Swagger UI** — http://localhost:8000/docs abre sem autenticação (200)
+- [x] **ReDoc** — http://localhost:8000/redoc abre sem autenticação (200)
+- [x] **Health check** — `GET /health` retorna `{"status": "ok"}` com campo `version`
 
 ### Controle de Acesso por Role
 
@@ -365,29 +367,33 @@ Use esta lista para validar o funcionamento completo do sistema. Todos os testes
 | Enviar leituras / criar lotes | ❌ | ✅ | ✅ |
 | Configurar panelas / usuários | ❌ | ❌ | ✅ |
 
-- [ ] **Todas as regras de role acima validadas** conforme tabela
+- [x] **Todas as regras de role acima validadas** conforme tabela
 
 ---
 
 ## Executar os Testes Automatizados do Backend
 
-Os testes rodam com SQLite em memória — não precisam do Docker.
+Os testes rodam com **SQLite em memória** — não precisam dos containers Docker.
+
+Execute os comandos abaixo dentro da pasta `backend/` do projeto clonado:
 
 ```bash
-# Entrar no container da API
-docker compose exec api bash
+# 1. Entrar na pasta do backend
+cd backend
 
-# Instalar dependências de desenvolvimento (se necessário)
-pip install -r /tmp/requirements-dev.txt
+# 2. (Recomendado) Criar um ambiente virtual Python
+python -m venv .venv
 
-# Rodar os testes com relatório de cobertura
-python -m pytest tests/ --cov=api --cov-report=term-missing -v
-```
+# Ativar no Windows
+.venv\Scripts\activate
 
-Ou localmente (fora do Docker), dentro de `backend/`:
+# Ativar no Linux/macOS
+source .venv/bin/activate
 
-```bash
+# 3. Instalar as dependências de desenvolvimento
 pip install -r requirements-dev.txt
+
+# 4. Rodar todos os testes com relatório de cobertura
 python -m pytest tests/ --cov=api --cov-report=term-missing -v
 ```
 
