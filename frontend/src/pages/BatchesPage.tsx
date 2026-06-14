@@ -58,8 +58,13 @@ function CreateBatchModal({ yeastProfiles, onClose }: CreateBatchModalProps) {
       onClose()
     },
     onError: (e: unknown) => {
-      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-      setError(msg ?? 'Erro ao criar lote')
+      const detail = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
+      if (Array.isArray(detail)) {
+        const msgs = detail.map((d: { msg?: string }) => d.msg ?? 'Erro de validação').join('; ')
+        setError(msgs)
+      } else {
+        setError(typeof detail === 'string' ? detail : 'Erro ao criar lote')
+      }
     },
   })
 

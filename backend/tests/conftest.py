@@ -1,6 +1,7 @@
+import asyncio
 import os
 import sys
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 # Must be set before any app module imports
 TEST_DB_PATH = os.path.join(os.path.dirname(__file__), "test.db")
@@ -48,12 +49,29 @@ def db():
     session.close()
 
 
+async def _noop_listen():
+    """Async generator that blocks until cancelled — simulates an idle pubsub channel."""
+    try:
+        await asyncio.sleep(3600)
+    except asyncio.CancelledError:
+        pass
+    return
+    yield  # makes this an async generator
+
+
 @pytest.fixture
 def mock_redis():
+    mock_pubsub = MagicMock()
+    mock_pubsub.subscribe = AsyncMock()
+    mock_pubsub.unsubscribe = AsyncMock()
+    mock_pubsub.aclose = AsyncMock()
+    mock_pubsub.listen = _noop_listen  # sync call, returns async generator
+
     mock = AsyncMock()
     mock.ping = AsyncMock()
     mock.publish = AsyncMock(return_value=1)
     mock.aclose = AsyncMock()
+    mock.pubsub = MagicMock(return_value=mock_pubsub)  # pubsub() is synchronous
     return mock
 
 
